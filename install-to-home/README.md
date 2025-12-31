@@ -86,3 +86,7 @@ Copy-Item -Path "optional\*" -Destination "$env:USERPROFILE\.claude\" -Force
 - Windows: `%APPDATA%\Claude\config.json`
 
 詳細な設定方法は、プロジェクトルートの README.md を参照してください。
+
+## 補足: プロジェクト固有のパーミッション設定
+
+プロジェクトごとにパーミッション設定をカスタマイズしたい場合は、`project-template/.claude/settings.local.json.example` を参考に、プロジェクトの `.claude/settings.local.json` を作成してください。

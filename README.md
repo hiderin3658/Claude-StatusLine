@@ -194,7 +194,9 @@ Claude-StatusLine/
 │   │   └── save-usage.sh
 │   └── README.md             # インストール手順
 ├── project-template/         # プロジェクト固有設定テンプレート
-│   └── CLAUDE.md             # プロジェクト固有AIルールのサンプル
+│   ├── CLAUDE.md             # プロジェクト固有AIルールのサンプル
+│   └── .claude/
+│       └── settings.local.json.example  # パーミッション設定テンプレート
 ├── README.md                 # このファイル
 ├── WINDOWS_SETUP.md          # Windows詳細セットアップガイド
 └── CLAUDE.md                 # AI共通コーディングルール（参照用）
@@ -250,6 +252,7 @@ Claude-StatusLine/
 | ファイル | 説明 |
 |---------|------|
 | `CLAUDE.md` | プロジェクト固有AIルールのテンプレート |
+| `.claude/settings.local.json.example` | パーミッション設定のテンプレート |
 
 ## 🎯 プロジェクト固有設定の使い方（オプション）
 
