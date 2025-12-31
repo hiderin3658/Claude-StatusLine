@@ -2,7 +2,8 @@
 """
 Claude Code メッセージ使用率計算スクリプト
 
-5時間ローリングウィンドウ内のメッセージ数を計算し、JSON形式で出力します。
+5時間固定ウィンドウ内のメッセージ数を計算し、JSON形式で出力します。
+ウィンドウ開始時刻から5時間経過したら自動的にリセットします。
 クロスプラットフォーム対応（Windows/Mac/Linux）
 """
 
@@ -11,6 +12,9 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# ウィンドウ状態管理ファイル
+WINDOW_STATE_FILE = Path.home() / '.claude' / 'usage-window.json'
 
 # Claude Code のログディレクトリ（クロスプラットフォーム対応）
 def get_log_directory():
@@ -67,9 +71,46 @@ def get_message_limit():
     plan = get_plan_config()
     return MESSAGE_LIMITS.get(plan, MESSAGE_LIMITS[DEFAULT_PLAN])
 
+def get_window_state():
+    """ウィンドウ状態を取得"""
+    if not WINDOW_STATE_FILE.exists():
+        return None
+
+    try:
+        with open(WINDOW_STATE_FILE, 'r', encoding='utf-8') as f:
+            state = json.load(f)
+            return {
+                'windowStart': datetime.fromisoformat(state['windowStart']),
+                'firstMessageTimestamp': datetime.fromisoformat(state.get('firstMessageTimestamp', state['windowStart']))
+            }
+    except Exception:
+        return None
+
+def save_window_state(window_start, first_message_timestamp=None):
+    """ウィンドウ状態を保存"""
+    if first_message_timestamp is None:
+        first_message_timestamp = window_start
+
+    state = {
+        'windowStart': window_start.isoformat(),
+        'firstMessageTimestamp': first_message_timestamp.isoformat()
+    }
+
+    WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(WINDOW_STATE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(state, f, indent=2)
+
+def should_reset_window(window_start, now):
+    """ウィンドウをリセットすべきか判定（5時間経過したか）"""
+    if window_start is None:
+        return True
+
+    elapsed = now - window_start
+    return elapsed >= timedelta(hours=5)
+
 def calculate_message_usage(window_hours=5, message_limit=None):
     """
-    5時間ウィンドウ内のメッセージ使用数を計算
+    5時間固定ウィンドウ内のメッセージ使用数を計算（リセット機能付き）
 
     Args:
         window_hours: ウィンドウの時間（デフォルト5時間）
@@ -93,9 +134,41 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             "messagePercent": 0
         }
 
-    messages = []
     now = datetime.now(timezone.utc)
-    window_start = now - timedelta(hours=window_hours)
+
+    # ウィンドウ状態を取得
+    window_state = get_window_state()
+
+    # リセット判定：5時間経過したかチェック
+    if window_state is not None and should_reset_window(window_state['windowStart'], now):
+        # 5時間経過 → ウィンドウをリセット（0%に戻す）
+        if WINDOW_STATE_FILE.exists():
+            WINDOW_STATE_FILE.unlink()
+
+        # 0%を返す（次のメッセージで新しいウィンドウ開始）
+        return {
+            "plan": plan,
+            "messageCount": 0,
+            "messageLimit": message_limit,
+            "messagePercent": 0,
+            "remainingMessages": message_limit,
+            "windowHours": window_hours,
+            "windowStart": None,
+            "windowEnd": None,
+            "timeUntilReset": 0,
+            "calculatedAt": now.isoformat(),
+            "resetStatus": "Window expired - waiting for next message"
+        }
+
+    # ウィンドウ状態がない場合（初回 or リセット後の最初のメッセージ）
+    if window_state is None:
+        # 過去5時間以内のメッセージを検索して新しいウィンドウを開始
+        window_start = now - timedelta(hours=window_hours)
+    else:
+        # 既存のウィンドウを使用
+        window_start = window_state['windowStart']
+
+    messages = []
 
     # 全プロジェクトのログファイルを走査
     for jsonl_file in log_dir.rglob('*.jsonl'):
@@ -146,10 +219,38 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         except Exception:
             continue
 
+    # 新しいウィンドウを開始する場合（初回 or リセット後の最初のメッセージ）
+    if window_state is None and messages:
+        # メッセージを時刻順にソート
+        messages.sort(key=lambda m: m['timestamp'])
+
+        # 最も古いメッセージの時刻を新しいウィンドウ開始時刻とする
+        oldest_message_ts = datetime.fromisoformat(messages[0]['timestamp'])
+        window_start = oldest_message_ts
+
+        # ウィンドウ終了時刻を計算（開始時刻 + 5時間）
+        window_end = window_start + timedelta(hours=window_hours)
+
+        # ウィンドウ内（開始時刻から5時間以内）のメッセージのみに絞る
+        messages = [
+            m for m in messages
+            if datetime.fromisoformat(m['timestamp']) < window_end
+        ]
+
+        # ウィンドウ状態を保存
+        save_window_state(window_start, oldest_message_ts)
+
     # メッセージ数を集計
     message_count = len(messages)
     message_percent = round((message_count / message_limit) * 100) if message_limit > 0 else 0
     remaining = max(0, message_limit - message_count)
+
+    # ウィンドウ終了時刻を計算
+    window_end = window_start + timedelta(hours=window_hours)
+    time_until_reset = window_end - now
+    # リセットまでの時間が負の場合は0にする（既に期限切れ）
+    time_until_reset_seconds = max(0, int(time_until_reset.total_seconds()))
+    reset_at = window_end.isoformat()
 
     # 結果を返す
     return {
@@ -160,6 +261,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         "remainingMessages": remaining,
         "windowHours": window_hours,
         "windowStart": window_start.isoformat(),
+        "windowEnd": reset_at,
+        "timeUntilReset": time_until_reset_seconds,
         "calculatedAt": now.isoformat()
     }
 

@@ -180,11 +180,16 @@ async function updateCache() {
       messageCount: messageUsage.messageCount || 0,
       messageLimit: messageUsage.messageLimit || 250,
       messagePercent: messageUsage.messagePercent || 0,
-      remainingMessages: messageUsage.remainingMessages || 0
+      remainingMessages: messageUsage.remainingMessages || 0,
+      // ウィンドウ情報（リセット機能対応）
+      windowStart: messageUsage.windowStart || null,
+      windowEnd: messageUsage.windowEnd || null,
+      timeUntilReset: messageUsage.timeUntilReset || 0
     };
 
     writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2));
-    log(`Cache updated: ${cacheData.messagePercent}% (${cacheData.messageCount}/${cacheData.messageLimit} messages)`);
+    const resetMinutes = Math.floor(cacheData.timeUntilReset / 60);
+    log(`Cache updated: ${cacheData.messagePercent}% (${cacheData.messageCount}/${cacheData.messageLimit} messages, reset in ${resetMinutes}m)`);
   } catch (error) {
     log(`Failed to update cache: ${error.message}`);
     // エラー時も空のキャッシュを書き込む
