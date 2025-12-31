@@ -107,6 +107,29 @@ function getClaudeProcessCount() {
   }
 }
 
+// Python コマンドを取得（クロスプラットフォーム対応）
+function getPythonCommand() {
+  if (platform() === 'win32') {
+    // Windows: 複数のパスを試行
+    const pythonPaths = [
+      `${process.env.LOCALAPPDATA}\\Programs\\Python\\Python312-arm64\\python.exe`,
+      `${process.env.LOCALAPPDATA}\\Programs\\Python\\Python312\\python.exe`,
+      `${process.env.LOCALAPPDATA}\\Programs\\Python\\Python311\\python.exe`,
+      'python'
+    ];
+    for (const pythonPath of pythonPaths) {
+      try {
+        execSync(`"${pythonPath}" --version`, { stdio: 'pipe' });
+        return `"${pythonPath}"`;
+      } catch (e) {
+        continue;
+      }
+    }
+    return 'python';
+  }
+  return 'python3';
+}
+
 // メッセージ使用率を取得（Pythonスクリプト経由）
 function getMessageUsage() {
   try {
@@ -114,7 +137,8 @@ function getMessageUsage() {
       ? `${process.env.USERPROFILE}\\.claude\\get-message-usage.py`
       : `${process.env.HOME}/.claude/get-message-usage.py`;
 
-    const output = execSync(`python3 "${scriptPath}"`, {
+    const pythonCmd = getPythonCommand();
+    const output = execSync(`${pythonCmd} "${scriptPath}"`, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 10000 // 10秒タイムアウト

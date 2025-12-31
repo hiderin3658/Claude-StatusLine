@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell.exe -NoProfile -Command:*)",
+      "Bash(cat:*)",
+      "Bash(python:*)",
+      "Bash(echo:*)"
+    ]
+  }
+}

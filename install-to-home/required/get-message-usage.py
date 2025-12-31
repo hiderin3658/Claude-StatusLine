@@ -15,19 +15,27 @@ from pathlib import Path
 # Claude Code のログディレクトリ（クロスプラットフォーム対応）
 def get_log_directory():
     """Claude Code のログディレクトリパスを取得"""
+    home = Path.home()
+
+    # 優先順位で複数のパスを確認
+    possible_paths = [
+        home / '.claude' / 'projects',  # 新バージョン（全OS共通）
+        home / '.config' / 'claude' / 'projects',  # 旧バージョン（macOS/Linux）
+    ]
+
     if sys.platform == 'win32':
-        # Windows
+        # Windows の APPDATA も確認
         appdata = os.environ.get('APPDATA', '')
-        return Path(appdata) / 'Claude' / 'projects'
-    else:
-        # macOS / Linux
-        home = Path.home()
-        # 新バージョン
-        new_path = home / '.config' / 'claude' / 'projects'
-        if new_path.exists():
-            return new_path
-        # 旧バージョン
-        return home / '.claude' / 'projects'
+        if appdata:
+            possible_paths.append(Path(appdata) / 'Claude' / 'projects')
+
+    # 存在するパスを返す
+    for path in possible_paths:
+        if path.exists():
+            return path
+
+    # 見つからない場合はデフォルトパスを返す
+    return home / '.claude' / 'projects'
 
 # プラン別メッセージ制限（5時間ウィンドウ）
 MESSAGE_LIMITS = {

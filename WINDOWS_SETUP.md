@@ -207,11 +207,16 @@ node "$env:USERPROFILE\.claude\ccusage-daemon.mjs"
 #### 問題: メッセージカウントが0のまま
 
 ```powershell
-# ログディレクトリが存在するか確認
+# ログディレクトリが存在するか確認（優先順位で検索）
+# 1. 新バージョン（推奨）
+Test-Path "$env:USERPROFILE\.claude\projects"
+
+# 2. 旧バージョン
 Test-Path "$env:APPDATA\Claude\projects"
 
 # ログファイルが存在するか確認
-Get-ChildItem "$env:APPDATA\Claude\projects" -Recurse -Filter "*.jsonl"
+Get-ChildItem "$env:USERPROFILE\.claude\projects" -Recurse -Filter "*.jsonl" -ErrorAction SilentlyContinue
+Get-ChildItem "$env:APPDATA\Claude\projects" -Recurse -Filter "*.jsonl" -ErrorAction SilentlyContinue
 ```
 
 ## 使用方法
@@ -256,7 +261,8 @@ Remove-Item "$env:TEMP\ccusage-daemon.pid" -ErrorAction SilentlyContinue
 | キャッシュ | `%TEMP%\ccusage-cache.json` |
 | daemon ログ | `%TEMP%\ccusage-daemon.log` |
 | PIDファイル | `%TEMP%\ccusage-daemon.pid` |
-| Claude ログ | `%APPDATA%\Claude\projects\` |
+| Claude ログ（新） | `%USERPROFILE%\.claude\projects\` |
+| Claude ログ（旧） | `%APPDATA%\Claude\projects\` |
 
 ## 注意事項
 
