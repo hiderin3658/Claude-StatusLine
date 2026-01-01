@@ -49,6 +49,27 @@ MESSAGE_LIMITS = {
     'max-200': 900,    # MAX プラン $200/月（Pro の 20倍）
 }
 
+# モデル別の使用量倍率
+# Opus は Sonnet の約7倍のリソースを消費する（実測値に基づく）
+MODEL_WEIGHTS = {
+    'opus': 7,      # Opus モデル（高性能・高コスト）
+    'sonnet': 1,    # Sonnet モデル（標準）
+    'haiku': 1,     # Haiku モデル（軽量）
+}
+DEFAULT_MODEL_WEIGHT = 1  # 不明なモデルのデフォルト倍率
+
+def get_model_weight(model_name):
+    """モデル名から使用量倍率を取得"""
+    if not model_name:
+        return DEFAULT_MODEL_WEIGHT
+
+    model_lower = model_name.lower()
+    for key, weight in MODEL_WEIGHTS.items():
+        if key in model_lower:
+            return weight
+
+    return DEFAULT_MODEL_WEIGHT
+
 DEFAULT_PLAN = 'pro'
 
 def get_plan_config():
@@ -169,6 +190,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         window_start = window_state['windowStart']
 
     messages = []
+    # アシスタント応答のモデル情報を保存（parentUuid -> model_name）
+    assistant_models = {}
 
     # 全プロジェクトのログファイルを走査
     for jsonl_file in log_dir.rglob('*.jsonl'):
@@ -178,7 +201,37 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             if mtime < window_start:
                 continue
 
-            # JSONLファイルを1行ずつ読み込み
+            # JSONLファイルを1行ずつ読み込み（2パス：1回目でアシスタント応答を収集）
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+
+                    try:
+                        entry = json.loads(line)
+
+                        # アシスタント応答からモデル情報を収集
+                        event_type = entry.get('type', '')
+                        if event_type == 'assistant':
+                            parent_uuid = entry.get('parentUuid')
+                            message = entry.get('message', {})
+                            if isinstance(message, dict):
+                                model_name = message.get('model', '')
+                                if parent_uuid and model_name:
+                                    assistant_models[parent_uuid] = model_name
+
+                    except (json.JSONDecodeError, ValueError, KeyError):
+                        continue
+        except Exception:
+            continue
+
+    # 2回目のパス：ユーザーメッセージをカウント
+    for jsonl_file in log_dir.rglob('*.jsonl'):
+        try:
+            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, timezone.utc)
+            if mtime < window_start:
+                continue
+
             with open(jsonl_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     if not line.strip():
@@ -196,23 +249,47 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                 continue
 
                             # 実際のユーザーメッセージのみをカウント
-                            # contentが文字列型で、かつ空でない場合のみ
                             message = entry.get('message', {})
                             if isinstance(message, dict):
                                 content = message.get('content', '')
-                                # contentが文字列でない、または空の場合は除外
-                                if not isinstance(content, str) or len(content.strip()) == 0:
+
+                                # content が配列形式の場合の処理
+                                if isinstance(content, list):
+                                    # 配列が空の場合は除外
+                                    if len(content) == 0:
+                                        continue
+                                    # 最初の要素が text オブジェクトかチェック
+                                    first_item = content[0]
+                                    if not isinstance(first_item, dict) or first_item.get('type') != 'text':
+                                        continue
+                                    # text の内容が空の場合は除外
+                                    text_content = first_item.get('text', '')
+                                    if not isinstance(text_content, str) or len(text_content.strip()) == 0:
+                                        continue
+                                # content が文字列形式の場合の処理
+                                elif isinstance(content, str):
+                                    if len(content.strip()) == 0:
+                                        continue
+                                else:
+                                    # その他の形式は除外
                                     continue
 
                             # タイムスタンプの解析
                             ts_str = entry.get('timestamp')
+                            msg_uuid = entry.get('uuid')
                             if ts_str:
                                 # ISO 8601形式をパース
                                 ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                                 if ts > window_start:
+                                    # 対応するアシスタント応答のモデルを取得
+                                    model_name = assistant_models.get(msg_uuid, '')
+                                    model_weight = get_model_weight(model_name)
+
                                     messages.append({
                                         'timestamp': ts.isoformat(),
-                                        'file': str(jsonl_file.name)
+                                        'file': str(jsonl_file.name),
+                                        'model': model_name,
+                                        'weight': model_weight
                                     })
                     except (json.JSONDecodeError, ValueError, KeyError):
                         continue
@@ -240,10 +317,26 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         # ウィンドウ状態を保存
         save_window_state(window_start, oldest_message_ts)
 
-    # メッセージ数を集計
-    message_count = len(messages)
-    message_percent = round((message_count / message_limit) * 100) if message_limit > 0 else 0
-    remaining = max(0, message_limit - message_count)
+    # メッセージ数を集計（重み付けを適用）
+    raw_message_count = len(messages)
+    weighted_message_count = sum(m.get('weight', 1) for m in messages)
+    message_percent = round((weighted_message_count / message_limit) * 100) if message_limit > 0 else 0
+    remaining = max(0, message_limit - weighted_message_count)
+
+    # モデル別の集計
+    model_counts = {}
+    for m in messages:
+        model = m.get('model', 'unknown') or 'unknown'
+        # モデル名を簡略化（例: claude-opus-4-5-20251101 → opus）
+        if 'opus' in model.lower():
+            model_key = 'opus'
+        elif 'sonnet' in model.lower():
+            model_key = 'sonnet'
+        elif 'haiku' in model.lower():
+            model_key = 'haiku'
+        else:
+            model_key = 'unknown'
+        model_counts[model_key] = model_counts.get(model_key, 0) + 1
 
     # ウィンドウ終了時刻を計算
     window_end = window_start + timedelta(hours=window_hours)
@@ -255,7 +348,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     # 結果を返す
     return {
         "plan": plan,
-        "messageCount": message_count,
+        "messageCount": weighted_message_count,  # 重み付け後のカウント
+        "rawMessageCount": raw_message_count,    # 重み付け前の実際のメッセージ数
         "messageLimit": message_limit,
         "messagePercent": message_percent,
         "remainingMessages": remaining,
@@ -263,7 +357,9 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         "windowStart": window_start.isoformat(),
         "windowEnd": reset_at,
         "timeUntilReset": time_until_reset_seconds,
-        "calculatedAt": now.isoformat()
+        "calculatedAt": now.isoformat(),
+        "modelCounts": model_counts,  # モデル別のメッセージ数
+        "modelWeights": MODEL_WEIGHTS  # 適用された倍率
     }
 
 def main():
