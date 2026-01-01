@@ -50,9 +50,9 @@ MESSAGE_LIMITS = {
 }
 
 # モデル別の使用量倍率
-# Opus は Sonnet の約7倍のリソースを消費する（実測値に基づく）
+# Opus は Sonnet の約3倍のリソースを消費する（公式使用率との比較に基づく）
 MODEL_WEIGHTS = {
-    'opus': 7,      # Opus モデル（高性能・高コスト）
+    'opus': 3,      # Opus モデル（高性能・高コスト）
     'sonnet': 1,    # Sonnet モデル（標準）
     'haiku': 1,     # Haiku モデル（軽量）
 }
@@ -69,6 +69,55 @@ def get_model_weight(model_name):
             return weight
 
     return DEFAULT_MODEL_WEIGHT
+
+
+def find_model_by_chain(msg_uuid, assistant_models, child_by_parent, max_depth=5):
+    """
+    parentUuidチェーンを辿ってモデル情報を取得
+
+    画像付きメッセージなど、直接のアシスタント応答がない場合に、
+    子のメッセージを経由してモデル情報を取得する。
+
+    Args:
+        msg_uuid: ユーザーメッセージのUUID
+        assistant_models: {parentUuid: model_name} のマッピング
+        child_by_parent: {parentUuid: [子のuuid]} のマッピング
+        max_depth: 最大探索深度（無限ループ防止）
+
+    Returns:
+        str: モデル名（見つからない場合は空文字列）
+    """
+    # まず直接検索
+    model = assistant_models.get(msg_uuid, '')
+    if model:
+        return model
+
+    # 幅優先探索で子のチェーンを辿る
+    visited = set()
+    queue = [msg_uuid]
+    depth = 0
+
+    while queue and depth < max_depth:
+        next_queue = []
+        for current_uuid in queue:
+            if current_uuid in visited:
+                continue
+            visited.add(current_uuid)
+
+            # このUUIDの子を取得
+            children = child_by_parent.get(current_uuid, [])
+            for child_uuid in children:
+                # 子のUUIDでモデルを検索
+                model = assistant_models.get(child_uuid, '')
+                if model:
+                    return model
+                next_queue.append(child_uuid)
+
+        queue = next_queue
+        depth += 1
+
+    return ''
+
 
 DEFAULT_PLAN = 'pro'
 
@@ -192,6 +241,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     messages = []
     # アシスタント応答のモデル情報を保存（parentUuid -> model_name）
     assistant_models = {}
+    # 親子関係を保存（parentUuid -> [子のuuid]）- 画像付きメッセージ等のチェーン追跡用
+    child_by_parent = {}
 
     # 全プロジェクトのログファイルを走査
     for jsonl_file in log_dir.rglob('*.jsonl'):
@@ -201,7 +252,7 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             if mtime < window_start:
                 continue
 
-            # JSONLファイルを1行ずつ読み込み（2パス：1回目でアシスタント応答を収集）
+            # JSONLファイルを1行ずつ読み込み（2パス：1回目でアシスタント応答と親子関係を収集）
             with open(jsonl_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     if not line.strip():
@@ -209,11 +260,18 @@ def calculate_message_usage(window_hours=5, message_limit=None):
 
                     try:
                         entry = json.loads(line)
+                        event_type = entry.get('type', '')
+                        entry_uuid = entry.get('uuid')
+                        parent_uuid = entry.get('parentUuid')
+
+                        # 親子関係を記録（すべてのエントリ）
+                        if parent_uuid and entry_uuid:
+                            if parent_uuid not in child_by_parent:
+                                child_by_parent[parent_uuid] = []
+                            child_by_parent[parent_uuid].append(entry_uuid)
 
                         # アシスタント応答からモデル情報を収集
-                        event_type = entry.get('type', '')
                         if event_type == 'assistant':
-                            parent_uuid = entry.get('parentUuid')
                             message = entry.get('message', {})
                             if isinstance(message, dict):
                                 model_name = message.get('model', '')
@@ -282,7 +340,10 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                 ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                                 if ts > window_start:
                                     # 対応するアシスタント応答のモデルを取得
-                                    model_name = assistant_models.get(msg_uuid, '')
+                                    # 画像付きメッセージ等はチェーンを辿って検索
+                                    model_name = find_model_by_chain(
+                                        msg_uuid, assistant_models, child_by_parent
+                                    )
                                     model_weight = get_model_weight(model_name)
 
                                     messages.append({

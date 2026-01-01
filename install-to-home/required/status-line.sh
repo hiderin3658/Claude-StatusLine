@@ -4,10 +4,42 @@
 input=$(cat)
 
 # jq を使って値を抽出
-MODEL=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
 CURRENT_DIR=$(echo "$input" | jq -r '.workspace.current_dir // "."')
 DIR_NAME="${CURRENT_DIR##*/}"
 [ -z "$DIR_NAME" ] && DIR_NAME="."
+
+# モデル情報をJSONLログファイルから直接取得
+# （Claude Codeが渡すモデル情報は/model切り替え時に更新されないバグがあるため）
+TRANSCRIPT_PATH=$(echo "$input" | jq -r '.transcript_path // ""')
+MODEL="Unknown"
+
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    # JSONLファイルの最後から100行を取得し、最新のassistantイベントのモデルを抽出
+    RAW_MODEL=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null | \
+        grep '"type":"assistant"' | \
+        tail -1 | \
+        grep -o '"model":"[^"]*"' | \
+        sed 's/"model":"//;s/"//')
+
+    if [ -n "$RAW_MODEL" ]; then
+        # モデル名を表示用にフォーマット（例: claude-opus-4-5-20251101 → Opus 4.5）
+        if echo "$RAW_MODEL" | grep -qi "opus"; then
+            MODEL="Opus 4.5"
+        elif echo "$RAW_MODEL" | grep -qi "sonnet"; then
+            MODEL="Sonnet 4.5"
+        elif echo "$RAW_MODEL" | grep -qi "haiku"; then
+            MODEL="Haiku"
+        else
+            # 不明なモデルの場合はそのまま表示
+            MODEL="$RAW_MODEL"
+        fi
+    fi
+fi
+
+# フォールバック: JSONLから取得できなかった場合はClaude Codeが渡す情報を使用
+if [ "$MODEL" = "Unknown" ]; then
+    MODEL=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
+fi
 
 # Git ブランチ情報を取得
 GIT_BRANCH=""
