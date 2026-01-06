@@ -1,8 +1,11 @@
 # Claude Code 起動時フック (Windows PowerShell版)
 #
-# このスクリプトは Claude Code 起動時に ccusage-daemon を起動します
+# このスクリプトは Claude Code 起動時に以下を起動します:
+# 1. ccusage-daemon (使用率監視)
+# 2. AutoHotkey スクリプト (スクリーンショット貼り付け機能)
 
 $daemonPath = Join-Path $env:USERPROFILE ".claude\ccusage-daemon.mjs"
+$ahkScriptPath = Join-Path $env:USERPROFILE ".claude\claude-paste.ahk"
 $logPath = Join-Path $env:TEMP "ccusage-daemon-startup.log"
 
 # daemon ファイルの存在確認
@@ -39,6 +42,63 @@ try {
 } catch {
     Write-Host "Error: Failed to start daemon - $_" -ForegroundColor Red
     exit 1
+}
+
+# ============================================================
+# AutoHotkey スクリプトの起動
+# ============================================================
+
+# AutoHotkey スクリプトファイルの存在確認
+if (-not (Test-Path $ahkScriptPath)) {
+    Write-Host "Warning: AutoHotkey script not found at $ahkScriptPath" -ForegroundColor Yellow
+    Write-Host "Skipping AutoHotkey startup" -ForegroundColor Gray
+    exit 0
+}
+
+# AutoHotkey がインストールされているか確認
+$ahkExe = $null
+$ahkPaths = @(
+    "$env:LOCALAPPDATA\Programs\AutoHotkey\v2\AutoHotkey64.exe",  # winget (user scope) - 64bit
+    "$env:LOCALAPPDATA\Programs\AutoHotkey\v2\AutoHotkey32.exe",  # winget (user scope) - 32bit
+    "$env:LOCALAPPDATA\Programs\AutoHotkey\v2\AutoHotkey.exe",    # winget (user scope) - generic
+    "C:\Program Files\AutoHotkey\v2\AutoHotkey.exe",
+    "C:\Program Files\AutoHotkey\AutoHotkey.exe",
+    "C:\Program Files (x86)\AutoHotkey\AutoHotkey.exe"
+)
+
+foreach ($path in $ahkPaths) {
+    if (Test-Path $path) {
+        $ahkExe = $path
+        break
+    }
+}
+
+if (-not $ahkExe) {
+    Write-Host "Warning: AutoHotkey is not installed" -ForegroundColor Yellow
+    Write-Host "Skipping AutoHotkey startup" -ForegroundColor Gray
+    exit 0
+}
+
+# 既に AutoHotkey プロセスが起動しているか確認
+$ahkProcesses = Get-Process -Name "AutoHotkey*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -like "*AutoHotkey*" }
+
+if ($ahkProcesses) {
+    Write-Host "AutoHotkey is already running" -ForegroundColor Cyan
+    exit 0
+}
+
+# AutoHotkey をバックグラウンドで起動
+try {
+    Start-Process -FilePath $ahkExe `
+        -ArgumentList $ahkScriptPath `
+        -WindowStyle Hidden `
+        -WorkingDirectory $env:USERPROFILE
+
+    Write-Host "AutoHotkey started successfully" -ForegroundColor Green
+    Write-Host "Script: $ahkScriptPath" -ForegroundColor Gray
+} catch {
+    Write-Host "Warning: Failed to start AutoHotkey - $_" -ForegroundColor Yellow
 }
 
 exit 0

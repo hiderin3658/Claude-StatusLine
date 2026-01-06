@@ -111,12 +111,8 @@ fi
 
 # 5時間ウィンドウのトークン使用状況をキャッシュから取得
 TOKEN_INFO=""
-# Windows では /c/tmp/、macOS/Linux では /tmp/ を使用
-if [ -f "/c/tmp/ccusage-cache.json" ]; then
-    USAGE_CACHE="/c/tmp/ccusage-cache.json"
-else
-    USAGE_CACHE="/tmp/ccusage-cache.json"
-fi
+# キャッシュファイルのパス（ホームディレクトリ配下の .claude/cache/ を使用）
+USAGE_CACHE="$HOME/.claude/cache/ccusage-cache.json"
 
 if [ -f "$USAGE_CACHE" ]; then
     # キャッシュファイルが存在する場合

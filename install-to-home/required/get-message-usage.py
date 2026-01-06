@@ -41,7 +41,7 @@ def get_log_directory():
     # 見つからない場合はデフォルトパスを返す
     return home / '.claude' / 'projects'
 
-# プラン別メッセージ制限（5時間ウィンドウ）
+# プラン別メッセージ制限（5時間ウィンドウ）- レガシー
 MESSAGE_LIMITS = {
     'free': 15,        # Free プラン（推定）
     'pro': 45,         # Pro プラン（$20/月）
@@ -49,14 +49,29 @@ MESSAGE_LIMITS = {
     'max-200': 900,    # MAX プラン $200/月（Pro の 20倍）
 }
 
-# モデル別の使用量倍率
-# Opus は Sonnet の約7倍のリソースを消費する（実測値に基づく）
-MODEL_WEIGHTS = {
-    'opus': 7,      # Opus モデル（高性能・高コスト）
-    'sonnet': 1,    # Sonnet モデル（標準）
-    'haiku': 1,     # Haiku モデル（軽量）
+# プラン別コスト制限（5時間ウィンドウ）
+# 公式の使用率表示から逆算した推定値
+# Max $100: 225メッセージ × 約11K tokens/msg ≈ 2,500,000
+TOKEN_LIMITS = {
+    'free': 170000,       # 15 msg × 約11K tokens
+    'pro': 500000,        # 45 msg × 約11K tokens
+    'max-100': 2500000,   # 225 msg × 約11K tokens（公式表示から逆算）
+    'max-200': 5000000,  # 450 msg × 約11K tokens
 }
-DEFAULT_MODEL_WEIGHT = 1  # 不明なモデルのデフォルト倍率
+
+# モデル別の使用量倍率（API価格ベース）
+# Opus: $75/$15 = 5.0, Sonnet: $15/$15 = 1.0, Haiku: $5/$15 = 0.33
+MODEL_WEIGHTS = {
+    'opus': 5.0,    # Opus モデル（Sonnet の 5倍）
+    'sonnet': 1.0,  # Sonnet モデル（基準）
+    'haiku': 0.33,  # Haiku モデル（Sonnet の 1/3）
+}
+DEFAULT_MODEL_WEIGHT = 1.0  # 不明なモデルのデフォルト倍率
+
+# コスト係数（Anthropic 価格ベース）
+CACHE_READ_COEFFICIENT = 0.1      # キャッシュ読み取り: 入力の 10%
+CACHE_CREATION_COEFFICIENT = 1.25 # キャッシュ作成: 入力の 1.25倍
+OUTPUT_COEFFICIENT = 5.0          # 出力: 入力の 5倍
 
 def get_model_weight(model_name):
     """モデル名から使用量倍率を取得"""
@@ -69,6 +84,54 @@ def get_model_weight(model_name):
             return weight
 
     return DEFAULT_MODEL_WEIGHT
+
+def calculate_weighted_tokens(usage, model_name):
+    """
+    重み付けトークン数を計算（コストベース）
+
+    Args:
+        usage: usage オブジェクト（assistant イベントから取得）
+        model_name: モデル名
+
+    Returns:
+        dict: 重み付け後のトークン情報
+
+    計算式:
+        effective_cost = (input * 1.0 + cache_creation * 1.25 + cache_read * 0.1 + output * 5.0) * model_weight
+    """
+    weight = get_model_weight(model_name)
+
+    # 入力トークン（各種）
+    input_tokens = usage.get('input_tokens', 0)
+    cache_creation = usage.get('cache_creation_input_tokens', 0)
+    cache_read = usage.get('cache_read_input_tokens', 0)
+
+    # 出力トークン
+    output_tokens = usage.get('output_tokens', 0)
+
+    # コストベースの実効トークン数を計算
+    # - 入力: 1.0倍（基準）
+    # - キャッシュ作成: 1.25倍
+    # - キャッシュ読み取り: 0.1倍（90%割引）
+    # - 出力: 5.0倍
+    effective_input = (
+        input_tokens * 1.0 +
+        cache_creation * CACHE_CREATION_COEFFICIENT +
+        cache_read * CACHE_READ_COEFFICIENT
+    )
+    effective_output = output_tokens * OUTPUT_COEFFICIENT
+
+    # モデル重み付け適用
+    weighted_input = effective_input * weight
+    weighted_output = effective_output * weight
+
+    return {
+        'raw_input': input_tokens + cache_creation + cache_read,
+        'raw_output': output_tokens,
+        'weighted_input': weighted_input,
+        'weighted_output': weighted_output,
+        'total_weighted': weighted_input + weighted_output
+    }
 
 DEFAULT_PLAN = 'pro'
 
@@ -166,25 +229,51 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         if WINDOW_STATE_FILE.exists():
             WINDOW_STATE_FILE.unlink()
 
+        # トークン制限値を取得
+        token_limit = TOKEN_LIMITS.get(plan, TOKEN_LIMITS['pro'])
+
         # 0%を返す（次のメッセージで新しいウィンドウ開始）
         return {
             "plan": plan,
-            "messageCount": 0,
-            "messageLimit": message_limit,
-            "messagePercent": 0,
-            "remainingMessages": message_limit,
             "windowHours": window_hours,
             "windowStart": None,
             "windowEnd": None,
             "timeUntilReset": 0,
             "calculatedAt": now.isoformat(),
+
+            # トークンベースの使用量（リセット時は0）
+            "tokens": {
+                "raw": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0, "total": 0},
+                "weighted": {"input": 0, "output": 0, "total": 0}
+            },
+            "modelBreakdown": {},
+
+            # トークン制限と使用率（リセット時は0%）
+            "tokenLimit": token_limit,
+            "tokenPercent": 0,
+            "remainingTokens": token_limit,
+
+            # レガシー: メッセージベースの情報
+            "legacy": {
+                "messageCount": 0,
+                "rawMessageCount": 0,
+                "messageLimit": message_limit,
+                "messagePercent": 0,
+                "remainingMessages": message_limit,
+                "modelCounts": {},
+                "modelWeights": MODEL_WEIGHTS
+            },
+
+            # 後方互換性
+            "messagePercent": 0,
             "resetStatus": "Window expired - waiting for next message"
         }
 
     # ウィンドウ状態がない場合（初回 or リセット後の最初のメッセージ）
     if window_state is None:
-        # 過去5時間以内のメッセージを検索して新しいウィンドウを開始
-        window_start = now - timedelta(hours=window_hours)
+        # リセット後：現在時刻から開始（過去のメッセージは含めない）
+        # 後で最初のメッセージの時刻に調整される（行417-436）
+        window_start = now
     else:
         # 既存のウィンドウを使用
         window_start = window_state['windowStart']
@@ -192,6 +281,12 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     messages = []
     # アシスタント応答のモデル情報を保存（parentUuid -> model_name）
     assistant_models = {}
+    # トークン使用量情報を保存
+    token_usage_data = {
+        'raw': {'input': 0, 'output': 0, 'cache_creation': 0, 'cache_read': 0, 'total': 0},
+        'weighted': {'input': 0, 'output': 0, 'total': 0},
+        'by_model': {}
+    }
 
     # 全プロジェクトのログファイルを走査
     for jsonl_file in log_dir.rglob('*.jsonl'):
@@ -210,7 +305,7 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                     try:
                         entry = json.loads(line)
 
-                        # アシスタント応答からモデル情報を収集
+                        # アシスタント応答からモデル情報とトークン使用量を収集
                         event_type = entry.get('type', '')
                         if event_type == 'assistant':
                             parent_uuid = entry.get('parentUuid')
@@ -219,6 +314,55 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                 model_name = message.get('model', '')
                                 if parent_uuid and model_name:
                                     assistant_models[parent_uuid] = model_name
+
+                                # トークン使用量を取得（参考情報として）
+                                usage = message.get('usage', {})
+                                stop_reason = message.get('stop_reason')
+                                ts_str = entry.get('timestamp')
+
+                                # 最終応答のみをカウント（stop_reason が存在する）
+                                # かつ、ウィンドウ内のもののみ
+                                if stop_reason and usage and ts_str:
+                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                                    if ts > window_start:
+                                        # 重み付けトークン数を計算
+                                        weighted = calculate_weighted_tokens(usage, model_name)
+
+                                        # 生トークン数を集計
+                                        input_tokens = usage.get('input_tokens', 0)
+                                        output_tokens = usage.get('output_tokens', 0)
+                                        cache_creation = usage.get('cache_creation_input_tokens', 0)
+                                        cache_read = usage.get('cache_read_input_tokens', 0)
+
+                                        token_usage_data['raw']['input'] += input_tokens
+                                        token_usage_data['raw']['output'] += output_tokens
+                                        token_usage_data['raw']['cache_creation'] += cache_creation
+                                        token_usage_data['raw']['cache_read'] += cache_read
+
+                                        # 重み付けトークン数を集計
+                                        token_usage_data['weighted']['input'] += weighted['weighted_input']
+                                        token_usage_data['weighted']['output'] += weighted['weighted_output']
+                                        token_usage_data['weighted']['total'] += weighted['total_weighted']
+
+                                        # モデル別の集計
+                                        model_key = 'unknown'
+                                        if 'opus' in model_name.lower():
+                                            model_key = 'opus'
+                                        elif 'sonnet' in model_name.lower():
+                                            model_key = 'sonnet'
+                                        elif 'haiku' in model_name.lower():
+                                            model_key = 'haiku'
+
+                                        if model_key not in token_usage_data['by_model']:
+                                            token_usage_data['by_model'][model_key] = {
+                                                'requests': 0,
+                                                'rawTokens': 0,
+                                                'weightedTokens': 0
+                                            }
+
+                                        token_usage_data['by_model'][model_key]['requests'] += 1
+                                        token_usage_data['by_model'][model_key]['rawTokens'] += weighted['raw_input'] + weighted['raw_output']
+                                        token_usage_data['by_model'][model_key]['weightedTokens'] += weighted['total_weighted']
 
                     except (json.JSONDecodeError, ValueError, KeyError):
                         continue
@@ -345,21 +489,57 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     time_until_reset_seconds = max(0, int(time_until_reset.total_seconds()))
     reset_at = window_end.isoformat()
 
+    # トークン使用量の合計値を計算
+    total_raw_tokens = (
+        token_usage_data['raw']['input'] +
+        token_usage_data['raw']['output'] +
+        token_usage_data['raw']['cache_creation'] +
+        token_usage_data['raw']['cache_read']
+    )
+    token_usage_data['raw']['total'] = total_raw_tokens
+
+    # トークン制限値を取得（キャリブレーション値または推定値）
+    token_limit = TOKEN_LIMITS.get(plan, TOKEN_LIMITS['pro'])
+
+    # トークンベースの使用率を計算
+    weighted_tokens = token_usage_data['weighted']['total']
+    token_percent = round((weighted_tokens / token_limit) * 100) if token_limit > 0 else 0
+    remaining_tokens = max(0, token_limit - weighted_tokens)
+
     # 結果を返す
     return {
         "plan": plan,
-        "messageCount": weighted_message_count,  # 重み付け後のカウント
-        "rawMessageCount": raw_message_count,    # 重み付け前の実際のメッセージ数
-        "messageLimit": message_limit,
-        "messagePercent": message_percent,
-        "remainingMessages": remaining,
         "windowHours": window_hours,
         "windowStart": window_start.isoformat(),
         "windowEnd": reset_at,
         "timeUntilReset": time_until_reset_seconds,
         "calculatedAt": now.isoformat(),
-        "modelCounts": model_counts,  # モデル別のメッセージ数
-        "modelWeights": MODEL_WEIGHTS  # 適用された倍率
+
+        # トークンベースの使用量（メイン）
+        "tokens": {
+            "raw": token_usage_data['raw'],
+            "weighted": token_usage_data['weighted']
+        },
+        "modelBreakdown": token_usage_data['by_model'],
+
+        # トークン制限と使用率
+        "tokenLimit": token_limit,
+        "tokenPercent": token_percent,
+        "remainingTokens": remaining_tokens,
+
+        # レガシー: メッセージベースの情報（後方互換性）
+        "legacy": {
+            "messageCount": weighted_message_count,
+            "rawMessageCount": raw_message_count,
+            "messageLimit": message_limit,
+            "messagePercent": message_percent,
+            "remainingMessages": remaining,
+            "modelCounts": model_counts,
+            "modelWeights": MODEL_WEIGHTS
+        },
+
+        # 後方互換性のため、トップレベルにも messagePercent を残す
+        "messagePercent": token_percent  # トークンベースの使用率を表示
     }
 
 def main():
