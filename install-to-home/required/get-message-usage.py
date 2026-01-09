@@ -59,10 +59,10 @@ TOKEN_LIMITS = {
     'max-200': 5000000,  # 450 msg × 約11K tokens
 }
 
-# モデル別の使用量倍率（API価格ベース）
-# Opus: $75/$15 = 5.0, Sonnet: $15/$15 = 1.0, Haiku: $5/$15 = 0.33
+# モデル別の使用量倍率（公式使用率に合わせて調整）
+# Opus: Sonnet の 3倍, Sonnet: 基準, Haiku: Sonnet の 1/3
 MODEL_WEIGHTS = {
-    'opus': 5.0,    # Opus モデル（Sonnet の 5倍）
+    'opus': 3.0,    # Opus モデル（Sonnet の 3倍）
     'sonnet': 1.0,  # Sonnet モデル（基準）
     'haiku': 0.33,  # Haiku モデル（Sonnet の 1/3）
 }
@@ -163,14 +163,18 @@ def get_window_state():
     try:
         with open(WINDOW_STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
-            return {
+            result = {
                 'windowStart': datetime.fromisoformat(state['windowStart']),
                 'firstMessageTimestamp': datetime.fromisoformat(state.get('firstMessageTimestamp', state['windowStart']))
             }
+            # リセットタイムスタンプがあれば含める
+            if 'resetTimestamp' in state:
+                result['resetTimestamp'] = datetime.fromisoformat(state['resetTimestamp'])
+            return result
     except Exception:
         return None
 
-def save_window_state(window_start, first_message_timestamp=None):
+def save_window_state(window_start, first_message_timestamp=None, reset_timestamp=None):
     """ウィンドウ状態を保存"""
     if first_message_timestamp is None:
         first_message_timestamp = window_start
@@ -179,6 +183,10 @@ def save_window_state(window_start, first_message_timestamp=None):
         'windowStart': window_start.isoformat(),
         'firstMessageTimestamp': first_message_timestamp.isoformat()
     }
+
+    # リセットタイムスタンプがあれば保存
+    if reset_timestamp is not None:
+        state['resetTimestamp'] = reset_timestamp.isoformat()
 
     WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(WINDOW_STATE_FILE, 'w', encoding='utf-8') as f:
@@ -226,8 +234,12 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     # リセット判定：5時間経過したかチェック
     if window_state is not None and should_reset_window(window_state['windowStart'], now):
         # 5時間経過 → ウィンドウをリセット（0%に戻す）
-        if WINDOW_STATE_FILE.exists():
-            WINDOW_STATE_FILE.unlink()
+        # リセットタイムスタンプを記録（この時点以降のメッセージのみカウントする）
+        save_window_state(
+            window_start=now,  # ダミー（すぐに上書きされる）
+            first_message_timestamp=now,  # ダミー
+            reset_timestamp=now  # リセット時点のタイムスタンプを記録
+        )
 
         # トークン制限値を取得
         token_limit = TOKEN_LIMITS.get(plan, TOKEN_LIMITS['pro'])
@@ -269,14 +281,21 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             "resetStatus": "Window expired - waiting for next message"
         }
 
-    # ウィンドウ状態がない場合（初回 or リセット後の最初のメッセージ）
+    # ウィンドウ状態の確認
     if window_state is None:
-        # リセット後：現在時刻から開始（過去のメッセージは含めない）
-        # 後で最初のメッセージの時刻に調整される（行417-436）
-        window_start = now
+        # 完全な初回起動（usage-window.json が存在しない）
+        window_start = now - timedelta(hours=6)
+        reset_timestamp = None
+    elif 'resetTimestamp' in window_state:
+        # リセット直後（resetTimestamp が記録されている）
+        # リセット時点以降のメッセージのみをカウントするため、
+        # リセットタイムスタンプを window_start として使用
+        reset_timestamp = window_state['resetTimestamp']
+        window_start = reset_timestamp
     else:
-        # 既存のウィンドウを使用
+        # 通常動作（既存のウィンドウを継続）
         window_start = window_state['windowStart']
+        reset_timestamp = None
 
     messages = []
     # アシスタント応答のモデル情報を保存（parentUuid -> model_name）
@@ -441,7 +460,10 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             continue
 
     # 新しいウィンドウを開始する場合（初回 or リセット後の最初のメッセージ）
-    if window_state is None and messages:
+    # reset_timestamp が存在する場合もリセット後の最初のメッセージとして扱う
+    should_start_new_window = (window_state is None or reset_timestamp is not None) and messages
+
+    if should_start_new_window:
         # メッセージを時刻順にソート
         messages.sort(key=lambda m: m['timestamp'])
 
@@ -458,8 +480,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             if datetime.fromisoformat(m['timestamp']) < window_end
         ]
 
-        # ウィンドウ状態を保存
-        save_window_state(window_start, oldest_message_ts)
+        # ウィンドウ状態を保存（resetTimestamp をクリア）
+        save_window_state(window_start, oldest_message_ts, reset_timestamp=None)
 
     # メッセージ数を集計（重み付けを適用）
     raw_message_count = len(messages)
