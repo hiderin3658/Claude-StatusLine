@@ -10,11 +10,16 @@ Claude Code メッセージ使用率計算スクリプト
 import json
 import os
 import sys
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ウィンドウ状態管理ファイル
 WINDOW_STATE_FILE = Path.home() / '.claude' / 'usage-window.json'
+
+# パフォーマンスチューニング定数
+MAX_FILES_TO_CHECK = 10  # 初回起動時にチェックする最新ファイル数
+MAX_LINES_TO_READ = 1000  # 大きなファイルからの逆順読み込み行数制限
 
 # Claude Code のログディレクトリ（クロスプラットフォーム対応）
 def get_log_directory():
@@ -53,18 +58,18 @@ MESSAGE_LIMITS = {
 # 公式の使用率表示から逆算した推定値
 # Max $100: 225メッセージ × 約11K tokens/msg ≈ 2,500,000
 TOKEN_LIMITS = {
-    'free': 170000,       # 15 msg × 約11K tokens
-    'pro': 500000,        # 45 msg × 約11K tokens
-    'max-100': 2500000,   # 225 msg × 約11K tokens（公式表示から逆算）
-    'max-200': 5000000,  # 450 msg × 約11K tokens
+    'free': 170000,        # 15 msg × 約11K tokens
+    'pro': 500000,         # 45 msg × 約11K tokens
+    'max-100': 30000000,   # /usage との比較から調整（3000万トークン）
+    'max-200': 60000000,   # max-100 の 2倍
 }
 
-# モデル別の使用量倍率（公式使用率に合わせて調整）
-# Opus: Sonnet の 3倍, Sonnet: 基準, Haiku: Sonnet の 1/3
+# モデル別の使用量倍率（API価格ベース: Opus $5, Sonnet $3, Haiku $1 per MTok）
+# Opus: Sonnet の 1.67倍, Sonnet: 基準, Haiku: Sonnet の 0.33倍
 MODEL_WEIGHTS = {
-    'opus': 3.0,    # Opus モデル（Sonnet の 3倍）
+    'opus': 1.67,   # Opus モデル（$5/$3 = 1.67倍）
     'sonnet': 1.0,  # Sonnet モデル（基準）
-    'haiku': 0.33,  # Haiku モデル（Sonnet の 1/3）
+    'haiku': 0.33,  # Haiku モデル（$1/$3 = 0.33倍）
 }
 DEFAULT_MODEL_WEIGHT = 1.0  # 不明なモデルのデフォルト倍率
 
@@ -145,7 +150,9 @@ def get_plan_config():
                 config = json.load(f)
                 plan = config.get('plan', DEFAULT_PLAN)
                 return plan
-    except Exception:
+    except (json.JSONDecodeError, OSError) as e:
+        # 設定ファイルの読み込みに失敗した場合はデフォルトを使用
+        print(f"Warning: Failed to read config file: {e}", file=sys.stderr)
         pass
 
     return DEFAULT_PLAN
@@ -171,7 +178,8 @@ def get_window_state():
             if 'resetTimestamp' in state:
                 result['resetTimestamp'] = datetime.fromisoformat(state['resetTimestamp'])
             return result
-    except Exception:
+    except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
+        print(f"Warning: Failed to read window state: {e}", file=sys.stderr)
         return None
 
 def save_window_state(window_start, first_message_timestamp=None, reset_timestamp=None):
@@ -199,6 +207,54 @@ def should_reset_window(window_start, now):
 
     elapsed = now - window_start
     return elapsed >= timedelta(hours=5)
+
+def find_latest_activity(log_dir):
+    """
+    ログから最新のアクティビティ（assistant応答）のタイムスタンプを探す
+
+    Args:
+        log_dir: Claude Code のログディレクトリパス
+
+    Returns:
+        datetime: 最新のアクティビティタイムスタンプ（見つからない場合はNone）
+    """
+    latest_ts = None
+
+    try:
+        # 全プロジェクトのログファイルを走査（更新日時でソート）
+        jsonl_files = sorted(log_dir.rglob('*.jsonl'), key=lambda f: f.stat().st_mtime, reverse=True)
+
+        # 最新のN個のファイルのみチェック（パフォーマンス考慮）
+        for jsonl_file in jsonl_files[:MAX_FILES_TO_CHECK]:
+            try:
+                with open(jsonl_file, 'r', encoding='utf-8') as f:
+                    # メモリ枯渇を防ぐため、末尾の限られた行数のみ読み込む
+                    lines = deque(f, maxlen=MAX_LINES_TO_READ)
+
+                    # ファイルを逆順で読む（最新イベントから）
+                    for line in reversed(lines):
+                        if not line.strip():
+                            continue
+
+                        try:
+                            entry = json.loads(line)
+
+                            # assistant応答を探す
+                            if entry.get('type') == 'assistant':
+                                ts_str = entry.get('timestamp')
+                                if ts_str:
+                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                                    if latest_ts is None or ts > latest_ts:
+                                        latest_ts = ts
+                        except (json.JSONDecodeError, ValueError, KeyError):
+                            continue
+            except OSError as e:
+                print(f"Warning: Failed to read file {jsonl_file}: {e}", file=sys.stderr)
+                continue
+    except Exception as e:
+        print(f"Warning: Failed to find latest activity: {e}", file=sys.stderr)
+
+    return latest_ts
 
 def calculate_message_usage(window_hours=5, message_limit=None):
     """
@@ -284,7 +340,18 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     # ウィンドウ状態の確認
     if window_state is None:
         # 完全な初回起動（usage-window.json が存在しない）
-        window_start = now - timedelta(hours=6)
+        # ログから最新のアクティビティを探して、そこからウィンドウを開始
+        # ただし、5時間以上前のアクティビティは無視（期限切れとして扱う）
+        latest_activity = find_latest_activity(log_dir)
+        if latest_activity and (now - latest_activity) < timedelta(hours=5):
+            # 5時間以内のアクティビティがある → そこからウィンドウ開始
+            window_start = latest_activity
+            save_window_state(window_start=window_start, first_message_timestamp=window_start)
+        else:
+            # 5時間以上前 or アクティビティなし → 新規ウィンドウ待機状態（0%表示）
+            # 現在時刻をウィンドウ開始として保存（次のアクティビティから本格的にカウント開始）
+            window_start = now
+            save_window_state(window_start=window_start, first_message_timestamp=window_start)
         reset_timestamp = None
     elif 'resetTimestamp' in window_state:
         # リセット直後（resetTimestamp が記録されている）
@@ -307,15 +374,17 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         'by_model': {}
     }
 
-    # 全プロジェクトのログファイルを走査
+    # 全プロジェクトのログファイルを1回で走査（パフォーマンス改善）
     for jsonl_file in log_dir.rglob('*.jsonl'):
         try:
             # ファイルの最終更新日時がウィンドウ内かチェック（高速化）
-            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, timezone.utc)
+            # タイムゾーン混在を防ぐため、明示的にUTC変換
+            mtime_local = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+            mtime = mtime_local.astimezone(timezone.utc)
             if mtime < window_start:
                 continue
 
-            # JSONLファイルを1行ずつ読み込み（2パス：1回目でアシスタント応答を収集）
+            # JSONLファイルを1行ずつ読み込み（assistantとuserを同時に処理）
             with open(jsonl_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     if not line.strip():
@@ -323,9 +392,9 @@ def calculate_message_usage(window_hours=5, message_limit=None):
 
                     try:
                         entry = json.loads(line)
+                        event_type = entry.get('type', '')
 
                         # アシスタント応答からモデル情報とトークン使用量を収集
-                        event_type = entry.get('type', '')
                         if event_type == 'assistant':
                             parent_uuid = entry.get('parentUuid')
                             message = entry.get('message', {})
@@ -334,14 +403,13 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                 if parent_uuid and model_name:
                                     assistant_models[parent_uuid] = model_name
 
-                                # トークン使用量を取得（参考情報として）
+                                # トークン使用量を取得
                                 usage = message.get('usage', {})
-                                stop_reason = message.get('stop_reason')
                                 ts_str = entry.get('timestamp')
 
-                                # 最終応答のみをカウント（stop_reason が存在する）
-                                # かつ、ウィンドウ内のもののみ
-                                if stop_reason and usage and ts_str:
+                                # 最終応答のみをカウント（usage が存在し、output_tokens > 0）
+                                # stop_reasonがnullの場合もカウント（ストリーミング中のイベント対応）
+                                if usage and ts_str and usage.get('output_tokens', 0) > 0:
                                     ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                                     if ts > window_start:
                                         # 重み付けトークン数を計算
@@ -383,29 +451,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                         token_usage_data['by_model'][model_key]['rawTokens'] += weighted['raw_input'] + weighted['raw_output']
                                         token_usage_data['by_model'][model_key]['weightedTokens'] += weighted['total_weighted']
 
-                    except (json.JSONDecodeError, ValueError, KeyError):
-                        continue
-        except Exception:
-            continue
-
-    # 2回目のパス：ユーザーメッセージをカウント
-    for jsonl_file in log_dir.rglob('*.jsonl'):
-        try:
-            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, timezone.utc)
-            if mtime < window_start:
-                continue
-
-            with open(jsonl_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-
-                    try:
-                        entry = json.loads(line)
-
-                        # ユーザーメッセージ送信イベントを特定
-                        event_type = entry.get('type', '')
-                        if event_type in ['UserPromptSubmit', 'user_prompt', 'user']:
+                        # ユーザーメッセージ送信イベントを処理
+                        elif event_type in ['UserPromptSubmit', 'user_prompt', 'user']:
                             # サイドチェーン（サブエージェント）のメッセージを除外
                             is_sidechain = entry.get('isSidechain', False)
                             if is_sidechain:
@@ -454,9 +501,17 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                         'model': model_name,
                                         'weight': model_weight
                                     })
-                    except (json.JSONDecodeError, ValueError, KeyError):
+
+                    except (json.JSONDecodeError, ValueError, KeyError) as e:
+                        # JSONパースエラーや予期されるキーエラーは無視
                         continue
-        except Exception:
+        except OSError as e:
+            # ファイル読み込みエラー
+            print(f"Warning: Failed to read file {jsonl_file}: {e}", file=sys.stderr)
+            continue
+        except Exception as e:
+            # その他の予期しないエラー
+            print(f"Error processing file {jsonl_file}: {e}", file=sys.stderr)
             continue
 
     # 新しいウィンドウを開始する場合（初回 or リセット後の最初のメッセージ）
