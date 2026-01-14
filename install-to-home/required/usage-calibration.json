@@ -1,0 +1,25 @@
+{
+  "plan": "max-100",
+  "history": [
+    {
+      "timestamp": "2026-01-14T06:55:11.467073+00:00",
+      "official_percent": 30.0,
+      "weighted_tokens": 9778191.119500002,
+      "estimated_limit": 32593970.39833334
+    },
+    {
+      "timestamp": "2026-01-14T07:00:31.484675+00:00",
+      "official_percent": 44.0,
+      "weighted_tokens": 10576764.869499998,
+      "estimated_limit": 24038101.97613636
+    },
+    {
+      "timestamp": "2026-01-14T08:00:55.770603+00:00",
+      "official_percent": 70.0,
+      "weighted_tokens": 16670920.769500028,
+      "estimated_limit": 23815601.099285755
+    }
+  ],
+  "current_limit": 24038101.97613636,
+  "confidence": 0.3
+}

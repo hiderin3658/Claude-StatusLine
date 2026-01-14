@@ -16,6 +16,7 @@ Claude Code のメッセージ使用率をステータスラインに表示す�
 - [プロジェクト固有設定の使い方](#-プロジェクト固有設定の使い方オプション)
 - [動作確認](#-動作確認)
 - [仕組み](#-仕組み)
+- [キャリブレーション](#-キャリブレーション使用率の自動調整)
 - [トラブルシューティング](#️-トラブルシューティング)
 - [ライセンス](#-ライセンス)
 - [参考資料](#-参考資料)
@@ -23,9 +24,13 @@ Claude Code のメッセージ使用率をステータスラインに表示す�
 ## ✨ 機能
 
 - 📊 **トークンベース使用率計算**（5時間ローリングウィンドウ）
-  - モデル別重み付け（Opus:Sonnet = 3:1）
+  - モデル別重み付け（Opus:Sonnet = 1.67:1）
   - コスト係数適用（キャッシュ、入力、出力）
 - 🎯 **プラン別制限設定**（Free / Pro / MAX-100 / MAX-200）
+- 🎚️ **自動キャリブレーション**（/usage表示値から制限値を自動調整）
+  - 複数回の測定で精度向上
+  - 複数環境でのデータ共有
+  - 外れ値に強い中央値計算
 - 🔄 **複数ウィンドウ対応**（全Claude Codeウィンドウで同じ値を表示）
 - 🌍 **クロスプラットフォーム**（Windows / macOS / Linux）
 - 🎨 **色分け表示**（使用率に応じて緑/黄/赤で視覚化）
@@ -98,10 +103,16 @@ chmod +x ~/.claude/*.py
 chmod +x ~/.claude/*.mjs
 chmod +x ~/.claude/*.sh
 
-# 4. （オプション）追加ツールをインストール
+# 4. （オプション）キャリブレーションデータをコピー
+# 複数環境で使用する場合、事前に用意したデータをコピー
+if [ -f install-to-home/required/usage-calibration.json ]; then
+  cp install-to-home/required/usage-calibration.json ~/.claude/
+fi
+
+# 5. （オプション）追加ツールをインストール
 cp install-to-home/optional/* ~/.claude/
 
-# 5. Claude Code 設定ファイルを編集
+# 6. Claude Code 設定ファイルを編集
 # ~/.config/claude/config.json または ~/.claude/settings.json
 ```
 
@@ -133,10 +144,16 @@ Copy-Item -Path "install-to-home\required\*.json" -Destination "$env:USERPROFILE
 Copy-Item -Path "install-to-home\required\templates" -Destination "$env:USERPROFILE\.claude\" -Recurse -Force
 Copy-Item -Path "install-to-home\required\references" -Destination "$env:USERPROFILE\.claude\" -Recurse -Force
 
-# 2. （オプション）追加ツールをコピー
+# 2. （オプション）キャリブレーションデータをコピー
+# 複数環境で使用する場合、事前に用意したデータをコピー
+if (Test-Path "install-to-home\required\usage-calibration.json") {
+    Copy-Item -Path "install-to-home\required\usage-calibration.json" -Destination "$env:USERPROFILE\.claude\" -Force
+}
+
+# 3. （オプション）追加ツールをコピー
 Copy-Item -Path "install-to-home\optional\*" -Destination "$env:USERPROFILE\.claude\" -Force
 
-# 3. Claude Code 設定ファイルを編集
+# 4. Claude Code 設定ファイルを編集
 # %APPDATA%\Claude\config.json
 ```
 
@@ -169,8 +186,8 @@ Copy-Item -Path "install-to-home\optional\*" -Destination "$env:USERPROFILE\.cla
 |-----------|---------|---------------------|------|
 | `free` | 無料 | 170,000 | Freeプラン（推定） |
 | `pro` | $20 | 500,000 | Proプラン |
-| `max-100` | $100 | 2,500,000 | MAX（Proの5倍） |
-| `max-200` | $200 | 5,000,000 | MAX（Proの10倍） |
+| `max-100` | $100 | 19,000,000～30,000,000 | MAX（Proの5倍）※キャリブレーション推奨 |
+| `max-200` | $200 | 38,000,000～60,000,000 | MAX（Proの10倍）※キャリブレーション推奨 |
 
 **プラン変更後は daemon を再起動してください：**
 
@@ -201,10 +218,12 @@ Claude-StatusLine/
 │   │   ├── references/       # 参照ファイル
 │   │   │   └── DESTRUCTIVE_COMMANDS_BLOCKLIST.md
 │   │   ├── get-message-usage.py
+│   │   ├── claude-calibrate.py
 │   │   ├── ccusage-daemon.mjs
 │   │   ├── status-line.sh / .ps1
 │   │   ├── on-startup.sh / .ps1
-│   │   └── usage-config.json
+│   │   ├── usage-config.json
+│   │   └── usage-calibration.json  # オプション（複数環境で共有する場合）
 │   └── optional/             # オプションツール
 ├── project-template/         # プロジェクト固有設定テンプレート
 │   └── CLAUDE.md             # プロジェクト固有AIルールのサンプル
@@ -221,12 +240,14 @@ Claude-StatusLine/
 | `templates/` | テンプレートファイル（コミット、PR） | 全OS |
 | `references/` | 参照ファイル（破壊的コマンドリスト） | 全OS |
 | `get-message-usage.py` | トークンカウントスクリプト | 全OS |
+| `claude-calibrate.py` | キャリブレーションスクリプト | 全OS |
 | `ccusage-daemon.mjs` | バックグラウンド監視daemon | 全OS |
 | `status-line.sh` | ステータスライン表示 | macOS/Linux |
 | `status-line.ps1` | ステータスライン表示 | Windows |
 | `on-startup.sh` | 起動フック | macOS/Linux |
 | `on-startup.ps1` | 起動フック | Windows |
 | `usage-config.json` | プラン設定 | 全OS |
+| `usage-calibration.json` | キャリブレーションデータ（オプション） | 全OS |
 
 ### install-to-home/optional/ - オプションツール
 
@@ -254,13 +275,16 @@ Claude-StatusLine/
 ├── references/               # 参照ファイル
 │   └── DESTRUCTIVE_COMMANDS_BLOCKLIST.md
 ├── get-message-usage.py      # トークンカウントスクリプト
+├── claude-calibrate.py       # キャリブレーションスクリプト
 ├── ccusage-daemon.mjs        # バックグラウンド監視daemon
 ├── status-line.sh            # ステータスライン表示（macOS/Linux）
 ├── status-line.ps1           # ステータスライン表示（Windows）
 ├── on-startup.sh             # 起動フック（macOS/Linux）
 ├── on-startup.ps1            # 起動フック（Windows）
 ├── usage-config.json         # プラン設定
-└── usage-cache.json          # キャッシュファイル（自動生成）
+├── usage-calibration.json    # キャリブレーションデータ（オプション）
+└── cache/                    # キャッシュディレクトリ（自動生成）
+    └── ccusage-cache.json    # 使用率キャッシュ
 
 ~/your-project/               # あなたのプロジェクト（任意）
 ├── .claude/
@@ -393,6 +417,37 @@ echo '{
 [Claude Sonnet 4.5] 📁 project | main | Ctx:29% | 5h:88%
 ```
 
+### キャリブレーション機能のテスト
+
+```bash
+# キャリブレーション状態を確認（初回は空）
+python ~/.claude/claude-calibrate.py
+
+# テストでキャリブレーションを実行（30%と仮定）
+python ~/.claude/claude-calibrate.py 30
+
+# 結果の確認
+cat ~/.claude/usage-calibration.json
+```
+
+**正常な出力例:**
+
+```json
+{
+  "plan": "max-100",
+  "history": [
+    {
+      "timestamp": "2026-01-14T06:55:11.467073+00:00",
+      "official_percent": 30.0,
+      "weighted_tokens": 9778191.119500002,
+      "estimated_limit": 32593970.39833334
+    }
+  ],
+  "current_limit": 32593970.39833334,
+  "confidence": 0.3333333333333333
+}
+```
+
 ## 📊 仕組み
 
 ### トークンベース使用率計算
@@ -406,9 +461,9 @@ echo '{
 ) × モデル重み
 
 モデル重み:
-- Opus: 3.0（Sonnet の 3倍）
+- Opus: 1.67（Sonnet の 1.67倍、API価格 $5/$3 = 1.67）
 - Sonnet: 1.0（基準）
-- Haiku: 0.33（Sonnet の 1/3）
+- Haiku: 0.33（Sonnet の 1/3、API価格 $1/$3 = 0.33）
 ```
 
 ### 5時間ローリングウィンドウ
@@ -442,6 +497,193 @@ echo '{
 3. **5分ごとに自動更新**
    - daemon がバックグラウンドで監視
    - キャッシュファイル (`~/.claude/usage-cache.json`) を更新
+
+## 🎯 キャリブレーション（使用率の自動調整）
+
+このツールは `/usage` コマンドの表示値を使って、トークン制限値を自動調整する**キャリブレーション機能**を搭載しています。
+
+### なぜキャリブレーションが必要か
+
+Claude Code の公式使用率（`/usage` コマンド）と計算値にずれが生じる場合があります：
+- 公式の計算式が非公開のため、完全に一致させるのが困難
+- モデルの重み付けや制限値が変更される可能性
+- 使用パターンによる誤差
+
+キャリブレーションを行うことで、**公式表示に自動で追従**できます。
+
+### 基本的な使い方
+
+```bash
+# 1. /usage コマンドで公式の使用率を確認
+/usage
+# 例: 「44%」と表示される
+
+# 2. キャリブレーションを実行
+cd ~/.claude
+python claude-calibrate.py 44
+
+# 3. 結果が表示される
+[RESULT] 調整後の制限値: 28,316,036 トークン
+[INFO] データポイント数: 2
+[INFO] 信頼度: 67%
+
+# 4. 次回から自動的に調整された制限値が使用される
+```
+
+### キャリブレーションの仕組み
+
+```
+ステップ1: /usage の値を入力（例: 44%）
+         ↓
+ステップ2: 現在の使用トークン数を取得（例: 10,576,765）
+         ↓
+ステップ3: 逆算で制限値を計算
+         10,576,765 ÷ 0.44 = 24,038,102
+         ↓
+ステップ4: usage-calibration.json に保存
+         {
+           "plan": "max-100",
+           "current_limit": 28,316,036,  // 中央値
+           "confidence": 0.67,
+           "history": [...]
+         }
+         ↓
+ステップ5: get-message-usage.py が自動的に読み込む
+```
+
+### 精度を向上させる
+
+**複数回実行すると精度が向上します：**
+
+```
+1回目: 30% → 推定制限値 32,593,970
+2回目: 44% → 推定制限値 24,038,102
+3回目: 38% → 推定制限値 28,800,000
+       ↓
+   中央値を使用: 28,800,000（外れ値に強い）
+   信頼度: 100%
+```
+
+**推奨タイミング:**
+- 初回セットアップ時
+- 使用率が10%、30%、50%に達したとき
+- 公式表示と計算値に5%以上の差があるとき
+
+### 複数環境での使用
+
+このリポジトリを複数のPC（Windows、Mac、Linux）で使用する場合、キャリブレーションデータも引き継ぐことができます。
+
+#### 方法1: リポジトリに含める（推奨）
+
+**初回セットアップ時:**
+```bash
+# 1. キャリブレーションを3回以上実行（信頼度100%まで）
+python ~/.claude/claude-calibrate.py 30
+python ~/.claude/claude-calibrate.py 44
+python ~/.claude/claude-calibrate.py 38
+
+# 2. キャリブレーションデータをリポジトリにコピー
+cp ~/.claude/usage-calibration.json \
+   /path/to/Claude-StatusLine/install-to-home/required/
+
+# 3. コミット＆プッシュ
+cd /path/to/Claude-StatusLine
+git add install-to-home/required/usage-calibration.json
+git commit -m "feat: キャリブレーションデータを追加"
+git push
+```
+
+**新しい環境でのインストール:**
+```bash
+# 通常のインストール手順に加えて
+cp install-to-home/required/usage-calibration.json ~/.claude/
+
+# これで新環境でも最初から正確な値が使える
+```
+
+#### 方法2: 手動でエクスポート/インポート
+
+```bash
+# 旧環境でエクスポート
+cp ~/.claude/usage-calibration.json ~/backup/
+
+# 新環境でインポート
+cp ~/backup/usage-calibration.json ~/.claude/
+```
+
+### キャリブレーション状態の確認
+
+```bash
+# 現在のキャリブレーション状態を表示
+python ~/.claude/claude-calibrate.py
+
+# 出力例:
+[STATUS] キャリブレーション状態
+
+プラン: max-100
+現在の制限値: 28,316,036 トークン
+信頼度: 67%
+データポイント数: 2
+
+[HISTORY] 履歴（最新5件）:
+  2026-01-14 15:55 - 30.0% -> 推定制限値: 32,593,970
+  2026-01-14 16:00 - 44.0% -> 推定制限値: 24,038,102
+```
+
+### キャリブレーションのリセット
+
+デフォルト値に戻したい場合：
+
+```bash
+# キャリブレーションデータを削除
+rm ~/.claude/usage-calibration.json
+
+# デフォルト値（19,000,000）に戻る
+```
+
+### ファイル構成
+
+キャリブレーション機能に関連するファイル：
+
+```
+~/.claude/
+├── claude-calibrate.py           # キャリブレーションスクリプト
+├── usage-calibration.json        # キャリブレーションデータ（自動生成）
+└── get-message-usage.py          # 使用率計算（キャリブレーションを自動読込）
+
+Claude-StatusLine/                # リポジトリ
+└── install-to-home/required/
+    ├── claude-calibrate.py       # 配布用テンプレート
+    └── usage-calibration.json    # 配布用テンプレート（オプション）
+```
+
+### 今日の終わりに行う作業
+
+複数環境で使用する場合、以下の手順でキャリブレーションデータをリポジトリに保存します：
+
+```bash
+# 1. 最終的なキャリブレーションを実行
+cd ~/.claude
+python claude-calibrate.py <現在の/usage表示値>
+
+# 2. キャリブレーション状態を確認
+python claude-calibrate.py
+# → 信頼度が67%以上であることを確認
+
+# 3. キャリブレーションデータをリポジトリにコピー
+cp ~/.claude/usage-calibration.json \
+   /path/to/Claude-StatusLine/install-to-home/required/
+
+# 4. リポジトリに移動してコミット
+cd /path/to/Claude-StatusLine
+git add install-to-home/required/usage-calibration.json
+git commit -m "feat: キャリブレーションデータを追加（<プラン名>: <信頼度>%）"
+git push
+
+# これで他のPCでもこのキャリブレーションデータが使用できます
+```
+
+**注意:** キャリブレーションデータには使用プラン（max-100、max-200等）が含まれます。異なるプランを使用している環境では、各環境で個別にキャリブレーションを実行してください。
 
 ## 🛠️ トラブルシューティング
 
@@ -484,6 +726,34 @@ Get-ExecutionPolicy
 
 # RemoteSigned に変更
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+### 使用率が /usage と大きくずれている
+
+キャリブレーションを実行してください：
+
+```bash
+# 1. /usage コマンドで正確な使用率を確認
+/usage
+
+# 2. その値でキャリブレーション
+python ~/.claude/claude-calibrate.py <使用率>
+
+# 3. 3回以上実行すると精度が向上
+```
+
+### キャリブレーションデータが適用されない
+
+```bash
+# キャリブレーションデータの存在を確認
+ls -la ~/.claude/usage-calibration.json
+
+# get-message-usage.py がキャリブレーションを読み込んでいるか確認
+python ~/.claude/get-message-usage.py 2>&1 | grep "キャリブレーション"
+
+# daemon を再起動
+pkill -f ccusage-daemon
+~/.claude/on-startup.sh
 ```
 
 ## 🎓 次のステップ

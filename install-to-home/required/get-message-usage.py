@@ -78,6 +78,54 @@ CACHE_READ_COEFFICIENT = 0.1      # キャッシュ読み取り: 入力の 10%
 CACHE_CREATION_COEFFICIENT = 1.25 # キャッシュ作成: 入力の 1.25倍
 OUTPUT_COEFFICIENT = 5.0          # 出力: 入力の 5倍
 
+def load_calibration_data():
+    """
+    キャリブレーションデータを読み込む
+
+    Returns:
+        dict or None: キャリブレーションデータ（存在しない場合はNone）
+    """
+    calibration_file = Path.home() / '.claude' / 'usage-calibration.json'
+
+    if not calibration_file.exists():
+        return None
+
+    try:
+        with open(calibration_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # 有効なキャリブレーションデータか確認
+            if data.get('current_limit') and data.get('confidence', 0) > 0:
+                return data
+            return None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+def get_token_limit(plan):
+    """
+    プランのトークン制限値を取得（キャリブレーションデータ優先）
+
+    Args:
+        plan: プラン名（'free', 'pro', 'max-100', 'max-200'）
+
+    Returns:
+        int: トークン制限値
+    """
+    # キャリブレーションデータを確認
+    calibration_data = load_calibration_data()
+
+    if calibration_data and calibration_data.get('plan') == plan:
+        limit = calibration_data.get('current_limit')
+        confidence = calibration_data.get('confidence', 0)
+
+        if limit and confidence > 0:
+            # デバッグ情報（stderr に出力）
+            print(f"[INFO] キャリブレーション済み制限値を使用: {limit:,.0f} (信頼度: {confidence*100:.0f}%)",
+                  file=sys.stderr)
+            return int(limit)
+
+    # キャリブレーションデータがない場合はデフォルト値
+    return TOKEN_LIMITS.get(plan, 500000)
+
 def get_model_weight(model_name):
     """モデル名から使用量倍率を取得"""
     if not model_name:
@@ -298,7 +346,7 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         )
 
         # トークン制限値を取得
-        token_limit = TOKEN_LIMITS.get(plan, TOKEN_LIMITS['pro'])
+        token_limit = get_token_limit(plan)
 
         # 0%を返す（次のメッセージで新しいウィンドウ開始）
         return {
@@ -576,7 +624,7 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     token_usage_data['raw']['total'] = total_raw_tokens
 
     # トークン制限値を取得（キャリブレーション値または推定値）
-    token_limit = TOKEN_LIMITS.get(plan, TOKEN_LIMITS['pro'])
+    token_limit = get_token_limit(plan)
 
     # トークンベースの使用率を計算
     weighted_tokens = token_usage_data['weighted']['total']
