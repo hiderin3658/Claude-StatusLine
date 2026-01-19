@@ -18,8 +18,32 @@
       "official_percent": 70.0,
       "weighted_tokens": 16670920.769500028,
       "estimated_limit": 23815601.099285755
+    },
+    {
+      "timestamp": "2026-01-15T02:03:38.074684+00:00",
+      "official_percent": 24.0,
+      "weighted_tokens": 99763.95,
+      "estimated_limit": 415683.125
+    },
+    {
+      "timestamp": "2026-01-15T02:32:44.141836+00:00",
+      "official_percent": 30.0,
+      "weighted_tokens": 6412293.149999993,
+      "estimated_limit": 21374310.499999978
+    },
+    {
+      "timestamp": "2026-01-15T03:53:43.172450+00:00",
+      "official_percent": 41.0,
+      "weighted_tokens": 9392199.249999987,
+      "estimated_limit": 22907803.048780456
+    },
+    {
+      "timestamp": "2026-01-15T08:36:45.250062+00:00",
+      "official_percent": 9.0,
+      "weighted_tokens": 2050810.05,
+      "estimated_limit": 22786778.333333336
     }
   ],
-  "current_limit": 24038101.97613636,
-  "confidence": 0.3
+  "current_limit": 22721123.24534988,
+  "confidence": 0.9
 }
