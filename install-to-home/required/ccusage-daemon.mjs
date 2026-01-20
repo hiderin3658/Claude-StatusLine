@@ -18,7 +18,7 @@ import { join } from 'path';
 const SCRIPT_TIMEOUT = 5000; // 5秒（プロセス検出スクリプト）
 const PYTHON_TIMEOUT = 10000; // 10秒（Python スクリプト）
 const MAIN_LOOP_INTERVAL = 10000; // 10秒（メインループ待機時間）
-const UPDATE_INTERVAL = 5 * 60 * 1000; // 5分（キャッシュ更新間隔）
+const UPDATE_INTERVAL = 2 * 60 * 1000; // 2分（キャッシュ更新間隔）
 const PROCESS_CHECK_INTERVAL = 60 * 1000; // 1分（プロセスチェック間隔）
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB（ログファイル最大サイズ）
 
@@ -42,6 +42,7 @@ if (!existsSync(CACHE_DIR)) {
 const CACHE_FILE = join(CACHE_DIR, 'ccusage-cache.json');
 const PID_FILE = join(CACHE_DIR, 'ccusage-daemon.pid');
 const LOG_FILE = join(CACHE_DIR, 'ccusage-daemon.log');
+const WINDOW_STATE_FILE = join(HOME_DIR, '.claude', 'usage-window.json');
 
 // ログローテーション（5MBを超えたら古いログを削除）
 function rotateLogIfNeeded() {
@@ -74,6 +75,78 @@ function log(message, level = LOG_LEVELS.INFO) {
   } catch (error) {
     console.error('Failed to write log:', error);
   }
+}
+
+// ===== usage-window.json 管理関数 =====
+
+/**
+ * ウィンドウ状態を読み込む
+ * @returns {object|null} ウィンドウ状態（存在しない場合はnull）
+ */
+function loadWindowState() {
+  try {
+    if (!existsSync(WINDOW_STATE_FILE)) {
+      return null;
+    }
+    const data = JSON.parse(readFileSync(WINDOW_STATE_FILE, 'utf8'));
+    log(`Window state loaded: windowStart=${data.windowStart}`, LOG_LEVELS.DEBUG);
+    return data;
+  } catch (error) {
+    log(`Failed to load window state: ${error.message}`, LOG_LEVELS.WARNING);
+    return null;
+  }
+}
+
+/**
+ * ウィンドウ状態を保存
+ * @param {Date} windowStart - ウィンドウ開始時刻
+ * @param {Date} firstMessageTimestamp - 最初のメッセージタイムスタンプ
+ * @param {Date|null} resetTimestamp - リセットタイムスタンプ（オプション）
+ */
+function saveWindowState(windowStart, firstMessageTimestamp = null, resetTimestamp = null) {
+  try {
+    const state = {
+      windowStart: windowStart.toISOString(),
+      firstMessageTimestamp: (firstMessageTimestamp || windowStart).toISOString()
+    };
+
+    if (resetTimestamp) {
+      state.resetTimestamp = resetTimestamp.toISOString();
+    }
+
+    writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+    log(`Window state saved: windowStart=${state.windowStart}`, LOG_LEVELS.INFO);
+  } catch (error) {
+    log(`Failed to save window state: ${error.message}`, LOG_LEVELS.ERROR);
+  }
+}
+
+/**
+ * ウィンドウをリセットすべきか判定（5時間経過したか）
+ * @param {string} windowStartISO - ウィンドウ開始時刻（ISO文字列）
+ * @returns {boolean} リセットすべきならtrue
+ */
+function shouldResetWindow(windowStartISO) {
+  try {
+    const windowStart = new Date(windowStartISO);
+    const now = new Date();
+    const elapsed = now - windowStart;
+    const fiveHours = 5 * 60 * 60 * 1000; // 5時間（ミリ秒）
+
+    return elapsed >= fiveHours;
+  } catch (error) {
+    log(`Error checking window reset: ${error.message}`, LOG_LEVELS.ERROR);
+    return false;
+  }
+}
+
+/**
+ * ウィンドウをリセット
+ */
+function resetWindow() {
+  const now = new Date();
+  log('Resetting 5-hour window...', LOG_LEVELS.INFO);
+  saveWindowState(now, now, now);
 }
 
 // PIDファイルチェック（重複起動防止）
@@ -302,6 +375,24 @@ async function mainLoop(initialLastUpdate = 0, initialLastProcessCheck = 0) {
       if (processCount === 0) {
         log('No Claude Code processes found. Shutting down...', LOG_LEVELS.INFO);
         break;
+      }
+
+      // ウィンドウ状態の管理
+      const windowState = loadWindowState();
+
+      if (processCount > 0) {
+        if (windowState === null) {
+          // 初回起動：ウィンドウを新規作成
+          const windowStart = new Date();
+          log('Initializing 5-hour window (first run)...', LOG_LEVELS.INFO);
+          saveWindowState(windowStart, windowStart);
+        } else {
+          // ウィンドウ状態が存在：5時間経過判定
+          if (shouldResetWindow(windowState.windowStart)) {
+            // 5時間経過：ウィンドウをリセット
+            resetWindow();
+          }
+        }
       }
 
       lastProcessCheck = now;

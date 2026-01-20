@@ -63,13 +63,17 @@ def get_current_usage():
             [sys.executable, str(USAGE_SCRIPT)],
             capture_output=True,
             text=True,
-            check=True
+            check=False  # 終了コードに関わらず出力を取得
         )
+
+        # 終了コード2（エラー）の場合のみ失敗扱い
+        # 終了コード1は80%以上の警告なので正常として扱う
+        if result.returncode == 2:
+            print(f"エラー: get-message-usage.py の実行に失敗しました", file=sys.stderr)
+            print(f"詳細: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+
         return json.loads(result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"エラー: get-message-usage.py の実行に失敗しました", file=sys.stderr)
-        print(f"詳細: {e.stderr}", file=sys.stderr)
-        sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"エラー: 使用状況データの解析に失敗しました", file=sys.stderr)
         sys.exit(1)

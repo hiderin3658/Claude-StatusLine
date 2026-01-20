@@ -42,8 +42,26 @@
       "official_percent": 9.0,
       "weighted_tokens": 2050810.05,
       "estimated_limit": 22786778.333333336
+    },
+    {
+      "timestamp": "2026-01-20T02:23:29.369758+00:00",
+      "official_percent": 50.0,
+      "weighted_tokens": 12029909.1915,
+      "estimated_limit": 24059818.383
+    },
+    {
+      "timestamp": "2026-01-20T02:57:14.158120+00:00",
+      "official_percent": 60.0,
+      "weighted_tokens": 14156695.5915,
+      "estimated_limit": 23594492.6525
+    },
+    {
+      "timestamp": "2026-01-20T04:42:33.131439+00:00",
+      "official_percent": 82.0,
+      "weighted_tokens": 21087397.54149998,
+      "estimated_limit": 25716338.46524388
     }
   ],
-  "current_limit": 22721123.24534988,
-  "confidence": 0.9
+  "current_limit": 23705046.875892878,
+  "confidence": 1.0
 }

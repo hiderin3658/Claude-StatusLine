@@ -10,16 +10,11 @@ Claude Code メッセージ使用率計算スクリプト
 import json
 import os
 import sys
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ウィンドウ状態管理ファイル
 WINDOW_STATE_FILE = Path.home() / '.claude' / 'usage-window.json'
-
-# パフォーマンスチューニング定数
-MAX_FILES_TO_CHECK = 10  # 初回起動時にチェックする最新ファイル数
-MAX_LINES_TO_READ = 1000  # 大きなファイルからの逆順読み込み行数制限
 
 # Claude Code のログディレクトリ（クロスプラットフォーム対応）
 def get_log_directory():
@@ -230,24 +225,6 @@ def get_window_state():
         print(f"Warning: Failed to read window state: {e}", file=sys.stderr)
         return None
 
-def save_window_state(window_start, first_message_timestamp=None, reset_timestamp=None):
-    """ウィンドウ状態を保存"""
-    if first_message_timestamp is None:
-        first_message_timestamp = window_start
-
-    state = {
-        'windowStart': window_start.isoformat(),
-        'firstMessageTimestamp': first_message_timestamp.isoformat()
-    }
-
-    # リセットタイムスタンプがあれば保存
-    if reset_timestamp is not None:
-        state['resetTimestamp'] = reset_timestamp.isoformat()
-
-    WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(WINDOW_STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, indent=2)
-
 def should_reset_window(window_start, now):
     """ウィンドウをリセットすべきか判定（5時間経過したか）"""
     if window_start is None:
@@ -255,54 +232,6 @@ def should_reset_window(window_start, now):
 
     elapsed = now - window_start
     return elapsed >= timedelta(hours=5)
-
-def find_latest_activity(log_dir):
-    """
-    ログから最新のアクティビティ（assistant応答）のタイムスタンプを探す
-
-    Args:
-        log_dir: Claude Code のログディレクトリパス
-
-    Returns:
-        datetime: 最新のアクティビティタイムスタンプ（見つからない場合はNone）
-    """
-    latest_ts = None
-
-    try:
-        # 全プロジェクトのログファイルを走査（更新日時でソート）
-        jsonl_files = sorted(log_dir.rglob('*.jsonl'), key=lambda f: f.stat().st_mtime, reverse=True)
-
-        # 最新のN個のファイルのみチェック（パフォーマンス考慮）
-        for jsonl_file in jsonl_files[:MAX_FILES_TO_CHECK]:
-            try:
-                with open(jsonl_file, 'r', encoding='utf-8') as f:
-                    # メモリ枯渇を防ぐため、末尾の限られた行数のみ読み込む
-                    lines = deque(f, maxlen=MAX_LINES_TO_READ)
-
-                    # ファイルを逆順で読む（最新イベントから）
-                    for line in reversed(lines):
-                        if not line.strip():
-                            continue
-
-                        try:
-                            entry = json.loads(line)
-
-                            # assistant応答を探す
-                            if entry.get('type') == 'assistant':
-                                ts_str = entry.get('timestamp')
-                                if ts_str:
-                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-                                    if latest_ts is None or ts > latest_ts:
-                                        latest_ts = ts
-                        except (json.JSONDecodeError, ValueError, KeyError):
-                            continue
-            except OSError as e:
-                print(f"Warning: Failed to read file {jsonl_file}: {e}", file=sys.stderr)
-                continue
-    except Exception as e:
-        print(f"Warning: Failed to find latest activity: {e}", file=sys.stderr)
-
-    return latest_ts
 
 def calculate_message_usage(window_hours=5, message_limit=None):
     """
@@ -335,20 +264,16 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     # ウィンドウ状態を取得
     window_state = get_window_state()
 
-    # リセット判定：5時間経過したかチェック
-    if window_state is not None and should_reset_window(window_state['windowStart'], now):
-        # 5時間経過 → ウィンドウをリセット（0%に戻す）
-        # リセットタイムスタンプを記録（この時点以降のメッセージのみカウントする）
-        save_window_state(
-            window_start=now,  # ダミー（すぐに上書きされる）
-            first_message_timestamp=now,  # ダミー
-            reset_timestamp=now  # リセット時点のタイムスタンプを記録
-        )
-
+    # ウィンドウ状態の確認
+    if window_state is None:
+        # usage-window.json が存在しない
+        # デーモンが起動していないか、まだウィンドウが初期化されていない
         # トークン制限値を取得
         token_limit = get_token_limit(plan)
 
-        # 0%を返す（次のメッセージで新しいウィンドウ開始）
+        print(f"Warning: Window state not found. Daemon may not be running.", file=sys.stderr)
+
+        # 0%を返す（デーモン起動待ち）
         return {
             "plan": plan,
             "windowHours": window_hours,
@@ -357,14 +282,14 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             "timeUntilReset": 0,
             "calculatedAt": now.isoformat(),
 
-            # トークンベースの使用量（リセット時は0）
+            # トークンベースの使用量（待機中は0）
             "tokens": {
                 "raw": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0, "total": 0},
                 "weighted": {"input": 0, "output": 0, "total": 0}
             },
             "modelBreakdown": {},
 
-            # トークン制限と使用率（リセット時は0%）
+            # トークン制限と使用率（待機中は0%）
             "tokenLimit": token_limit,
             "tokenPercent": 0,
             "remainingTokens": token_limit,
@@ -382,26 +307,10 @@ def calculate_message_usage(window_hours=5, message_limit=None):
 
             # 後方互換性
             "messagePercent": 0,
-            "resetStatus": "Window expired - waiting for next message"
+            "resetStatus": "Waiting for daemon to initialize window"
         }
 
-    # ウィンドウ状態の確認
-    if window_state is None:
-        # 完全な初回起動（usage-window.json が存在しない）
-        # ログから最新のアクティビティを探して、そこからウィンドウを開始
-        # ただし、5時間以上前のアクティビティは無視（期限切れとして扱う）
-        latest_activity = find_latest_activity(log_dir)
-        if latest_activity and (now - latest_activity) < timedelta(hours=5):
-            # 5時間以内のアクティビティがある → そこからウィンドウ開始
-            window_start = latest_activity
-            save_window_state(window_start=window_start, first_message_timestamp=window_start)
-        else:
-            # 5時間以上前 or アクティビティなし → 新規ウィンドウ待機状態（0%表示）
-            # 現在時刻をウィンドウ開始として保存（次のアクティビティから本格的にカウント開始）
-            window_start = now
-            save_window_state(window_start=window_start, first_message_timestamp=window_start)
-        reset_timestamp = None
-    elif 'resetTimestamp' in window_state:
+    if 'resetTimestamp' in window_state:
         # リセット直後（resetTimestamp が記録されている）
         # リセット時点以降のメッセージのみをカウントするため、
         # リセットタイムスタンプを window_start として使用
