@@ -28,17 +28,15 @@ try {
 
 # daemon をバックグラウンドで起動
 # -WindowStyle Hidden: ウィンドウを非表示
-# -RedirectStandardOutput/-RedirectStandardError: 出力をログファイルにリダイレクト
+# Note: デーモンは自身で ~/.claude/cache/ccusage-daemon.log にログを出力します
 try {
     Start-Process -FilePath "node" `
         -ArgumentList $daemonPath `
         -WindowStyle Hidden `
-        -RedirectStandardOutput $logPath `
-        -RedirectStandardError $logPath `
         -WorkingDirectory $env:USERPROFILE
 
     Write-Host "ccusage-daemon started successfully" -ForegroundColor Green
-    Write-Host "Log file: $logPath" -ForegroundColor Gray
+    Write-Host "Log file: $env:USERPROFILE\.claude\cache\ccusage-daemon.log" -ForegroundColor Gray
 } catch {
     Write-Host "Error: Failed to start daemon - $_" -ForegroundColor Red
     exit 1

@@ -69,7 +69,7 @@ if ($usage -and $contextSize -and $contextSize -gt 0) {
 }
 
 # 5時間ウィンドウのメッセージ使用状況をキャッシュから取得
-$cacheFile = Join-Path $env:TEMP "ccusage-cache.json"
+$cacheFile = Join-Path $env:USERPROFILE ".claude\cache\ccusage-cache.json"
 
 if (Test-Path $cacheFile) {
     try {
@@ -79,19 +79,20 @@ if (Test-Path $cacheFile) {
 
         if ($cacheAge -lt $maxAge) {
             $cache = Get-Content $cacheFile -Raw | ConvertFrom-Json
-            $messagePercent = $cache.messagePercent
+            # tokenPercent を優先、なければ messagePercent を使用
+            $tokenPercent = if ($cache.tokenPercent) { $cache.tokenPercent } else { $cache.messagePercent }
 
-            if ($messagePercent -ne $null -and $messagePercent -ne 0) {
+            if ($tokenPercent -ne $null -and $tokenPercent -ne 0) {
                 # 色を決定
                 $msgColor = "Green"
-                if ($messagePercent -ge 80) {
+                if ($tokenPercent -ge 80) {
                     $msgColor = "Red"
-                } elseif ($messagePercent -ge 50) {
+                } elseif ($tokenPercent -ge 50) {
                     $msgColor = "Yellow"
                 }
 
                 Write-Host " | 5h:" -NoNewline
-                Write-Host "$messagePercent%" -ForegroundColor $msgColor -NoNewline
+                Write-Host "$tokenPercent%" -ForegroundColor $msgColor -NoNewline
             }
         }
     } catch {

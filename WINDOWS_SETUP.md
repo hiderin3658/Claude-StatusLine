@@ -160,7 +160,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\on
 Get-Process | Where-Object { $_.ProcessName -eq "node" -and $_.CommandLine -like "*ccusage-daemon*" }
 
 # キャッシュファイルが生成されたか確認
-Get-Content "$env:TEMP\ccusage-cache.json"
+Get-Content "$env:USERPROFILE\.claude\cache\ccusage-cache.json"
 ```
 
 ### 6. トラブルシューティング
@@ -197,8 +197,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ```powershell
 # ログファイルを確認
-Get-Content "$env:TEMP\ccusage-daemon-startup.log"
-Get-Content "$env:TEMP\ccusage-daemon.log"
+Get-Content "$env:USERPROFILE\.claude\cache\ccusage-daemon.log"
 
 # 手動で daemon を起動してエラーを確認
 node "$env:USERPROFILE\.claude\ccusage-daemon.mjs"
@@ -240,7 +239,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\on
 ### 手動でキャッシュを更新
 
 ```powershell
-python "$env:USERPROFILE\.claude\get-message-usage.py" | Out-File -FilePath "$env:TEMP\ccusage-cache.json" -Encoding utf8
+python "$env:USERPROFILE\.claude\get-message-usage.py" | Out-File -FilePath "$env:USERPROFILE\.claude\cache\ccusage-cache.json" -Encoding utf8
 ```
 
 ### daemon の停止
@@ -250,7 +249,7 @@ python "$env:USERPROFILE\.claude\get-message-usage.py" | Out-File -FilePath "$en
 Stop-Process -Name "node" -Force -ErrorAction SilentlyContinue
 
 # PIDファイルを削除
-Remove-Item "$env:TEMP\ccusage-daemon.pid" -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.claude\cache\ccusage-daemon.pid" -ErrorAction SilentlyContinue
 ```
 
 ## ファイル配置場所
@@ -258,9 +257,9 @@ Remove-Item "$env:TEMP\ccusage-daemon.pid" -ErrorAction SilentlyContinue
 | ファイル | Windows パス |
 |---------|-------------|
 | スクリプト類 | `%USERPROFILE%\.claude\` |
-| キャッシュ | `%TEMP%\ccusage-cache.json` |
-| daemon ログ | `%TEMP%\ccusage-daemon.log` |
-| PIDファイル | `%TEMP%\ccusage-daemon.pid` |
+| キャッシュ | `%USERPROFILE%\.claude\cache\ccusage-cache.json` |
+| daemon ログ | `%USERPROFILE%\.claude\cache\ccusage-daemon.log` |
+| PIDファイル | `%USERPROFILE%\.claude\cache\ccusage-daemon.pid` |
 | Claude ログ（新） | `%USERPROFILE%\.claude\projects\` |
 | Claude ログ（旧） | `%APPDATA%\Claude\projects\` |
 
