@@ -64,13 +64,12 @@ TOKEN_LIMITS = {
     'max-200': 38000000,   # max-100 の 2倍
 }
 
-# モデル別の使用量倍率（実測キャリブレーション値）
-# Opus: 2026-01-21 Opus単独キャリブレーションで 1.67 → 1.32 に修正
-# Sonnet: 基準, Haiku: API価格ベース
+# モデル別の重み係数（weighted_tokens計算用、後方互換性のため維持）
+# 注: 使用率計算は model-calibration.json の設定を使用
 MODEL_WEIGHTS = {
-    'opus': 1.32,   # Opus モデル（実測: 公式19% vs 計算24% → 1.67×19/24≈1.32）
     'sonnet': 1.0,  # Sonnet モデル（基準）
     'haiku': 0.33,  # Haiku モデル（API価格ベース: $1/$3）
+    'opus': 1.0,    # Opus モデル（使用率計算は補間関数を使用）
 }
 DEFAULT_MODEL_WEIGHT = 1.0  # 不明なモデルのデフォルト倍率
 
@@ -78,6 +77,210 @@ DEFAULT_MODEL_WEIGHT = 1.0  # 不明なモデルのデフォルト倍率
 CACHE_READ_COEFFICIENT = 0.1      # キャッシュ読み取り: 入力の 10%
 CACHE_CREATION_COEFFICIENT = 1.25 # キャッシュ作成: 入力の 1.25倍
 OUTPUT_COEFFICIENT = 5.0          # 出力: 入力の 5倍
+
+# モデルキャリブレーション設定ファイル
+MODEL_CALIBRATION_FILE = Path.home() / '.claude' / 'model-calibration.json'
+
+# デフォルトのモデル設定（設定ファイルがない場合のフォールバック）
+DEFAULT_MODEL_CONFIG = {
+    "type": "weight",
+    "weight": 1.0,
+    "base_limit": 24000000
+}
+
+# キャッシュ（設定ファイルの再読み込みを防ぐ）
+_model_calibration_cache = None
+
+def load_model_calibration():
+    """
+    モデルキャリブレーション設定を読み込む（キャッシュ付き）
+
+    Returns:
+        dict: キャリブレーション設定
+    """
+    global _model_calibration_cache
+
+    if _model_calibration_cache is not None:
+        return _model_calibration_cache
+
+    if not MODEL_CALIBRATION_FILE.exists():
+        # デフォルト設定を返す
+        _model_calibration_cache = {
+            "models": {},
+            "fallback_patterns": {},
+            "default": DEFAULT_MODEL_CONFIG
+        }
+        return _model_calibration_cache
+
+    try:
+        with open(MODEL_CALIBRATION_FILE, 'r', encoding='utf-8') as f:
+            _model_calibration_cache = json.load(f)
+            return _model_calibration_cache
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: Failed to load model calibration: {e}", file=sys.stderr)
+        _model_calibration_cache = {
+            "models": {},
+            "fallback_patterns": {},
+            "default": DEFAULT_MODEL_CONFIG
+        }
+        return _model_calibration_cache
+
+def get_model_config(model_name):
+    """
+    モデル名からキャリブレーション設定を取得
+
+    Args:
+        model_name: モデル名（例: 'claude-opus-4-5-20251101'）
+
+    Returns:
+        tuple: (model_key, config) - モデルキーと設定のタプル
+    """
+    calibration = load_model_calibration()
+    model_lower = model_name.lower() if model_name else ''
+
+    # 1. 完全一致を試す（models）
+    for model_key, config in calibration.get('models', {}).items():
+        patterns = config.get('match_patterns', [])
+        for pattern in patterns:
+            if pattern.lower() in model_lower:
+                # inherit_from があれば継承元の設定を取得
+                if 'inherit_from' in config:
+                    inherited = calibration.get('models', {}).get(config['inherit_from'], {})
+                    merged = {**inherited, **config}
+                    return model_key, merged
+                return model_key, config
+
+    # 2. フォールバックパターンを試す
+    for model_key, config in calibration.get('fallback_patterns', {}).items():
+        patterns = config.get('match_patterns', [])
+        for pattern in patterns:
+            if pattern.lower() in model_lower:
+                # inherit_from があれば継承元の設定を取得
+                if 'inherit_from' in config:
+                    inherited = calibration.get('models', {}).get(config['inherit_from'], {})
+                    merged = {**inherited, **config}
+                    return model_key, merged
+                return model_key, config
+
+    # 3. デフォルト設定を返す
+    return 'unknown', calibration.get('default', DEFAULT_MODEL_CONFIG)
+
+def interpolate_percent(raw_tokens, data_points):
+    """
+    生トークン数から使用率を補間計算（汎用関数）
+
+    Args:
+        raw_tokens: 生トークン数
+        data_points: キャリブレーションデータポイントのリスト
+
+    Returns:
+        float: 推定使用率（%）
+    """
+    if not data_points or len(data_points) < 1:
+        return 0.0
+
+    # データポイントをトークン数でソート
+    sorted_points = sorted(data_points, key=lambda x: x.get('raw_tokens', 0))
+
+    if raw_tokens <= 0:
+        return 0.0
+
+    # 最小値より小さい場合：比例計算
+    first_point = sorted_points[0]
+    if raw_tokens <= first_point.get('raw_tokens', 0):
+        if first_point.get('raw_tokens', 0) > 0:
+            ratio = raw_tokens / first_point['raw_tokens']
+            return first_point.get('percent', 0) * ratio
+        return 0.0
+
+    # 最大値より大きい場合：外挿
+    last_point = sorted_points[-1]
+    if raw_tokens >= last_point.get('raw_tokens', 0):
+        if len(sorted_points) >= 2:
+            x1 = sorted_points[-2].get('raw_tokens', 0)
+            y1 = sorted_points[-2].get('percent', 0)
+            x2 = last_point.get('raw_tokens', 0)
+            y2 = last_point.get('percent', 0)
+            slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
+            return y2 + slope * (raw_tokens - x2)
+        else:
+            return last_point.get('percent', 0)
+
+    # 補間：該当する区間を探す
+    for i in range(len(sorted_points) - 1):
+        x1 = sorted_points[i].get('raw_tokens', 0)
+        y1 = sorted_points[i].get('percent', 0)
+        x2 = sorted_points[i + 1].get('raw_tokens', 0)
+        y2 = sorted_points[i + 1].get('percent', 0)
+
+        if x1 <= raw_tokens <= x2:
+            # 線形補間
+            if x2 == x1:
+                return y1
+            ratio = (raw_tokens - x1) / (x2 - x1)
+            return y1 + (y2 - y1) * ratio
+
+    # フォールバック
+    return last_point.get('percent', 0)
+
+def calculate_model_percent(model_key, config, raw_tokens, weighted_tokens, base_limit):
+    """
+    モデルの使用率を計算（汎用関数）
+
+    Args:
+        model_key: モデルキー
+        config: モデルのキャリブレーション設定
+        raw_tokens: 生トークン数
+        weighted_tokens: 重み付けトークン数
+        base_limit: ベース制限値
+
+    Returns:
+        float: 使用率（%）
+    """
+    calc_type = config.get('type', 'weight')
+
+    if calc_type == 'interpolate':
+        # 非線形補間
+        data_points = config.get('data_points', [])
+        if data_points:
+            return interpolate_percent(raw_tokens, data_points)
+        # データポイントがない場合はweight方式にフォールバック
+        calc_type = 'weight'
+
+    if calc_type == 'limit':
+        # 制限値ベース
+        limit = config.get('limit', base_limit)
+        if limit > 0:
+            return (weighted_tokens / limit) * 100
+        return 0.0
+
+    # weight方式（デフォルト）
+    weight = config.get('weight', 1.0)
+    model_limit = config.get('base_limit', base_limit)
+    if model_limit > 0:
+        return (weighted_tokens / model_limit) * 100
+    return 0.0
+
+def get_model_key_from_name(model_name):
+    """
+    モデル名から簡略化されたモデルキーを取得
+
+    Args:
+        model_name: フルモデル名
+
+    Returns:
+        str: 簡略化されたモデルキー（opus, sonnet, haiku, unknown）
+    """
+    model_key, _ = get_model_config(model_name)
+
+    # モデルキーからベース名を抽出（opus-4.5 → opus）
+    if 'opus' in model_key.lower():
+        return 'opus'
+    elif 'sonnet' in model_key.lower():
+        return 'sonnet'
+    elif 'haiku' in model_key.lower():
+        return 'haiku'
+    return 'unknown'
 
 def load_calibration_data():
     """
@@ -480,14 +683,8 @@ def calculate_message_usage(window_hours=5, message_limit=None):
                                         token_usage_data['weighted']['output'] += weighted['weighted_output']
                                         token_usage_data['weighted']['total'] += weighted['total_weighted']
 
-                                        # モデル別の集計
-                                        model_key = 'unknown'
-                                        if 'opus' in model_name.lower():
-                                            model_key = 'opus'
-                                        elif 'sonnet' in model_name.lower():
-                                            model_key = 'sonnet'
-                                        elif 'haiku' in model_name.lower():
-                                            model_key = 'haiku'
+                                        # モデル別の集計（汎用関数を使用）
+                                        model_key = get_model_key_from_name(model_name)
 
                                         if model_key not in token_usage_data['by_model']:
                                             token_usage_data['by_model'][model_key] = {
@@ -597,19 +794,11 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     message_percent = round((weighted_message_count / message_limit) * 100) if message_limit > 0 else 0
     remaining = max(0, message_limit - weighted_message_count)
 
-    # モデル別の集計
+    # モデル別の集計（汎用関数を使用）
     model_counts = {}
     for m in messages:
         model = m.get('model', 'unknown') or 'unknown'
-        # モデル名を簡略化（例: claude-opus-4-5-20251101 → opus）
-        if 'opus' in model.lower():
-            model_key = 'opus'
-        elif 'sonnet' in model.lower():
-            model_key = 'sonnet'
-        elif 'haiku' in model.lower():
-            model_key = 'haiku'
-        else:
-            model_key = 'unknown'
+        model_key = get_model_key_from_name(model)
         model_counts[model_key] = model_counts.get(model_key, 0) + 1
 
     # ウィンドウ終了時刻を計算
@@ -628,13 +817,36 @@ def calculate_message_usage(window_hours=5, message_limit=None):
     )
     token_usage_data['raw']['total'] = total_raw_tokens
 
-    # トークン制限値を取得（キャリブレーション値または推定値）
-    token_limit = get_token_limit(plan)
+    # ベース制限値を取得（キャリブレーション値または推定値）
+    base_limit = get_token_limit(plan)
 
-    # トークンベースの使用率を計算
+    # モデル別使用率を計算（設定ファイルベースで汎用的に処理）
+    model_percents = {}
+
+    for model_key, model_data in token_usage_data['by_model'].items():
+        raw_tokens = model_data.get('rawTokens', 0)
+        weighted_tokens = model_data.get('weightedTokens', 0)
+
+        if raw_tokens > 0 or weighted_tokens > 0:
+            # モデルキーからフルモデル名を推測してキャリブレーション設定を取得
+            _, config = get_model_config(model_key)
+
+            # 使用率を計算
+            percent = calculate_model_percent(
+                model_key, config, raw_tokens, weighted_tokens, base_limit
+            )
+            model_percents[model_key] = percent
+            model_data['calculatedPercent'] = round(percent, 1)
+            model_data['calculationType'] = config.get('type', 'weight')
+
+    # 全体使用率 = 各モデルの使用率の合計
+    token_percent = round(sum(model_percents.values()))
+    sonnet_limit = base_limit  # 後方互換性
+
+    # 後方互換性のための値（レガシー計算）
     weighted_tokens = token_usage_data['weighted']['total']
-    token_percent = round((weighted_tokens / token_limit) * 100) if token_limit > 0 else 0
-    remaining_tokens = max(0, token_limit - weighted_tokens)
+    token_limit = sonnet_limit  # 後方互換性
+    remaining_tokens = max(0, 100 - token_percent)  # パーセントベースの残り
 
     # モデル別比率を計算
     total_raw_by_model = sum(m.get('rawTokens', 0) for m in token_usage_data['by_model'].values())
@@ -665,10 +877,13 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         },
         "modelBreakdown": token_usage_data['by_model'],
 
-        # トークン制限と使用率
-        "tokenLimit": token_limit,
+        # モデル別使用率（新方式）
+        "modelPercents": model_percents,
         "tokenPercent": token_percent,
-        "remainingTokens": remaining_tokens,
+        "remainingPercent": max(0, 100 - token_percent),
+
+        # Sonnet用制限値（参考情報）
+        "sonnetLimit": sonnet_limit,
 
         # レガシー: メッセージベースの情報（後方互換性）
         "legacy": {
@@ -682,7 +897,7 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         },
 
         # 後方互換性のため、トップレベルにも messagePercent を残す
-        "messagePercent": token_percent  # トークンベースの使用率を表示
+        "messagePercent": token_percent  # モデル別合算の使用率を表示
     }
 
 def main():

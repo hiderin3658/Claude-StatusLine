@@ -1,0 +1,71 @@
+{
+  "description": "モデル別キャリブレーション設定（バージョン管理対応）",
+  "version": "1.0",
+  "updated_at": "2026-01-21",
+  "models": {
+    "opus-4.5": {
+      "type": "interpolate",
+      "match_patterns": ["opus-4-5", "opus-4.5", "claude-opus-4-5"],
+      "description": "Opus 4.5 - 非線形補間で使用率計算",
+      "data_points": [
+        {
+          "raw_tokens": 17437564,
+          "percent": 19.0,
+          "timestamp": "2026-01-21T02:50:00+00:00",
+          "note": "初回キャリブレーション"
+        },
+        {
+          "raw_tokens": 76132779,
+          "percent": 54.0,
+          "timestamp": "2026-01-21T04:30:00+00:00",
+          "note": "2回目キャリブレーション"
+        },
+        {
+          "raw_tokens": 104132321,
+          "percent": 75.0,
+          "timestamp": "2026-01-21T05:45:00+00:00",
+          "note": "3回目キャリブレーション"
+        }
+      ]
+    },
+    "sonnet-4.5": {
+      "type": "limit",
+      "match_patterns": ["sonnet-4-5", "sonnet-4.5", "claude-sonnet-4-5"],
+      "description": "Sonnet 4.5 - 制限値ベースで使用率計算",
+      "limit": 24000000
+    },
+    "haiku-4.5": {
+      "type": "weight",
+      "match_patterns": ["haiku-4-5", "haiku-4.5", "claude-haiku-4-5"],
+      "description": "Haiku 4.5 - 重み係数ベースで使用率計算",
+      "weight": 0.33,
+      "base_limit": 24000000
+    }
+  },
+  "fallback_patterns": {
+    "opus": {
+      "type": "interpolate",
+      "match_patterns": ["opus"],
+      "description": "Opus（バージョン不明）- 最新のOpusキャリブレーションを使用",
+      "inherit_from": "opus-4.5"
+    },
+    "sonnet": {
+      "type": "limit",
+      "match_patterns": ["sonnet"],
+      "description": "Sonnet（バージョン不明）- 最新のSonnetキャリブレーションを使用",
+      "inherit_from": "sonnet-4.5"
+    },
+    "haiku": {
+      "type": "weight",
+      "match_patterns": ["haiku"],
+      "description": "Haiku（バージョン不明）- 最新のHaikuキャリブレーションを使用",
+      "inherit_from": "haiku-4.5"
+    }
+  },
+  "default": {
+    "type": "weight",
+    "weight": 1.0,
+    "base_limit": 24000000,
+    "description": "未知のモデル用デフォルト設定"
+  }
+}
