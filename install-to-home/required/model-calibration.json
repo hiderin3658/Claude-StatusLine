@@ -1,7 +1,7 @@
 {
   "description": "モデル別キャリブレーション設定（バージョン管理対応）",
   "version": "1.0",
-  "updated_at": "2026-01-21",
+  "updated_at": "2026-01-22",
   "models": {
     "opus-4.5": {
       "type": "interpolate",
@@ -13,6 +13,12 @@
           "percent": 19.0,
           "timestamp": "2026-01-21T02:50:00+00:00",
           "note": "初回キャリブレーション"
+        },
+        {
+          "raw_tokens": 50756358,
+          "percent": 36.0,
+          "timestamp": "2026-01-22T02:56:00+00:00",
+          "note": "5回目キャリブレーション（低〜中域補完）"
         },
         {
           "raw_tokens": 76132779,
