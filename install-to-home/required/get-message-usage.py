@@ -452,12 +452,36 @@ def save_window_state(window_start, first_message_timestamp=None, reset_timestam
     with open(WINDOW_STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, indent=2)
 
+def round_to_hour_utc(dt):
+    """
+    日時をUTC基準で正時（〇〇:00:00）に切り捨てる
+
+    Args:
+        dt: datetime オブジェクト（タイムゾーン付き）
+
+    Returns:
+        datetime: 正時に丸められた datetime
+    """
+    if dt is None:
+        return None
+
+    # UTCに変換
+    dt_utc = dt.astimezone(timezone.utc)
+
+    # 分・秒・マイクロ秒を0にして正時に丸める
+    rounded = dt_utc.replace(minute=0, second=0, microsecond=0)
+
+    return rounded
+
+
 def should_reset_window(window_start, now):
     """ウィンドウをリセットすべきか判定（5時間経過したか）"""
     if window_start is None:
         return True
 
-    elapsed = now - window_start
+    # 正時に丸めた開始時刻から5時間経過したかチェック
+    rounded_start = round_to_hour_utc(window_start)
+    elapsed = now - rounded_start
     return elapsed >= timedelta(hours=5)
 
 def find_latest_activity(log_dir):
@@ -776,8 +800,9 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         oldest_message_ts = datetime.fromisoformat(messages[0]['timestamp'])
         window_start = oldest_message_ts
 
-        # ウィンドウ終了時刻を計算（開始時刻 + 5時間）
-        window_end = window_start + timedelta(hours=window_hours)
+        # ウィンドウ終了時刻を計算（正時に丸めた開始時刻 + 5時間）
+        rounded_window_start = round_to_hour_utc(window_start)
+        window_end = rounded_window_start + timedelta(hours=window_hours)
 
         # ウィンドウ内（開始時刻から5時間以内）のメッセージのみに絞る
         messages = [
@@ -801,8 +826,9 @@ def calculate_message_usage(window_hours=5, message_limit=None):
         model_key = get_model_key_from_name(model)
         model_counts[model_key] = model_counts.get(model_key, 0) + 1
 
-    # ウィンドウ終了時刻を計算
-    window_end = window_start + timedelta(hours=window_hours)
+    # ウィンドウ終了時刻を計算（正時に丸めた開始時刻から5時間後）
+    rounded_window_start = round_to_hour_utc(window_start)
+    window_end = rounded_window_start + timedelta(hours=window_hours)
     time_until_reset = window_end - now
     # リセットまでの時間が負の場合は0にする（既に期限切れ）
     time_until_reset_seconds = max(0, int(time_until_reset.total_seconds()))
