@@ -865,12 +865,13 @@ def calculate_message_usage(window_hours=5, message_limit=None):
             model_data['calculatedPercent'] = round(percent, 1)
             model_data['calculationType'] = config.get('type', 'weight')
 
-    # 全体使用率 = 各モデルの使用率の合計
-    token_percent = round(sum(model_percents.values()))
-    sonnet_limit = base_limit  # 後方互換性
-
     # 後方互換性のための値（レガシー計算）
     weighted_tokens = token_usage_data['weighted']['total']
+    sonnet_limit = base_limit  # 後方互換性
+
+    # 全体使用率 = 全体のweighted_tokensをベース制限で割る
+    # 注: 各モデルのpercentの合計ではなく、公式と同じ計算方式
+    token_percent = round((weighted_tokens / base_limit) * 100) if base_limit > 0 else 0
     token_limit = sonnet_limit  # 後方互換性
     remaining_tokens = max(0, 100 - token_percent)  # パーセントベースの残り
 

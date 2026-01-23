@@ -1,7 +1,7 @@
 {
   "description": "モデル別キャリブレーション設定（バージョン管理対応）",
   "version": "1.0",
-  "updated_at": "2026-01-22",
+  "updated_at": "2026-01-23",
   "models": {
     "opus-4.5": {
       "type": "interpolate",
@@ -44,7 +44,8 @@
       "type": "limit",
       "match_patterns": ["sonnet-4-5", "sonnet-4.5", "claude-sonnet-4-5"],
       "description": "Sonnet 4.5 - 制限値ベースで使用率計算",
-      "limit": 24000000
+      "limit": 24000000,
+      "note": "weighted_tokensベースで計算。Sonnetは比較的線形。"
     },
     "haiku-4.5": {
       "type": "weight",
