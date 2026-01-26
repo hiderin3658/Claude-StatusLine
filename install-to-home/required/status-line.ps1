@@ -29,7 +29,7 @@ if (-not $dirName) { $dirName = "." }
 Write-Host "[" -NoNewline
 Write-Host $model -ForegroundColor Cyan -NoNewline
 Write-Host "] " -NoNewline
-Write-Host "📁 $dirName" -NoNewline
+Write-Host "DIR $dirName" -NoNewline
 
 # Gitブランチ情報を取得
 Push-Location $currentDir -ErrorAction SilentlyContinue
