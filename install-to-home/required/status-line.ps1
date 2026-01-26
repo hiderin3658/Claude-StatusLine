@@ -2,6 +2,9 @@
 #
 # 使い方: echo '{"model":{"display_name":"Claude"},...}' | powershell -File status-line.ps1
 
+# UTF-8エンコーディングを設定（絵文字表示のため）
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # 標準入力からJSONを読み込む
 $inputJson = @()
 while ($line = [Console]::In.ReadLine()) {
@@ -82,7 +85,7 @@ if (Test-Path $cacheFile) {
             # tokenPercent を優先、なければ messagePercent を使用
             $tokenPercent = if ($cache.tokenPercent) { $cache.tokenPercent } else { $cache.messagePercent }
 
-            if ($tokenPercent -ne $null -and $tokenPercent -ne 0) {
+            if ($null -ne $tokenPercent) {
                 # 色を決定
                 $msgColor = "Green"
                 if ($tokenPercent -ge 80) {
