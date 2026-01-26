@@ -5,25 +5,29 @@
 # 見つからなかった場合は exit code 1 を返します。
 
 try {
-    # すべての node.exe プロセスを取得
-    $processes = Get-WmiObject Win32_Process -Filter "name='node.exe'" -ErrorAction Stop
+    $count = 0
 
-    # Claude Code 関連のプロセスをフィルタリング
-    # - @anthropic-ai/claude-code/cli.js を含むプロセス
-    # - @anthropic を含むプロセス（MCPサーバーなども含む）
-    $claudeProcesses = $processes | Where-Object {
-        $_.CommandLine -and (
-            $_.CommandLine -like '*@anthropic*' -or
-            $_.CommandLine -like '*claude-code*'
-        )
+    # 1. claude.exe プロセスを検出（Claude Code本体）
+    $claudeExeProcesses = Get-WmiObject Win32_Process -Filter "name='claude.exe'" -ErrorAction SilentlyContinue
+    if ($claudeExeProcesses) {
+        $claudeExeCount = if ($claudeExeProcesses.Count) { $claudeExeProcesses.Count } else { 1 }
+        $count += $claudeExeCount
     }
 
-    $count = 0
-    if ($claudeProcesses) {
-        $count = $claudeProcesses.Count
-        if ($count -eq $null) {
-            # 単一のプロセスの場合、Count プロパティは null になる
-            $count = 1
+    # 2. node.exe プロセスの中から Claude Code CLI および MCP サーバーを検出
+    $nodeProcesses = Get-WmiObject Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue
+    if ($nodeProcesses) {
+        $claudeNodeProcesses = $nodeProcesses | Where-Object {
+            $_.CommandLine -and (
+                $_.CommandLine -like '*@anthropic*' -or
+                $_.CommandLine -like '*claude-code*' -or
+                $_.CommandLine -like '*claude*cli*'
+            )
+        }
+
+        if ($claudeNodeProcesses) {
+            $nodeCount = if ($claudeNodeProcesses.Count) { $claudeNodeProcesses.Count } else { 1 }
+            $count += $nodeCount
         }
     }
 
