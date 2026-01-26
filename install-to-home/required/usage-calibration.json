@@ -77,10 +77,36 @@
       "weighted_tokens": 15926015,
       "estimated_limit": 21234687,
       "model_breakdown": {
-        "sonnet": {"requests": 335, "percent": 15.8},
-        "opus": {"requests": 763, "percent": 55.7}
+        "sonnet": {
+          "requests": 335,
+          "percent": 15.8
+        },
+        "opus": {
+          "requests": 763,
+          "percent": 55.7
+        }
       },
       "note": "Opus+Sonnet混合使用。計算値67% vs 公式75%で8%乖離"
+    },
+    {
+      "timestamp": "2026-01-26T03:54:02.093673+00:00",
+      "official_percent": 52.0,
+      "calculated_percent": 58.0,
+      "weighted_tokens": 13900603,
+      "estimated_limit": 26731928.846153844,
+      "model_breakdown": {
+        "sonnet": {
+          "requests": 704,
+          "percent": 40.6,
+          "raw_tokens": 61150833
+        },
+        "opus": {
+          "requests": 315,
+          "percent": 23.9,
+          "raw_tokens": 27123303
+        }
+      },
+      "note": "Opus中心の使用。計算値58% vs 公式52%で6%乖離。非線形補間の精度要改善"
     }
   ],
   "current_limit": 23953592.1,
