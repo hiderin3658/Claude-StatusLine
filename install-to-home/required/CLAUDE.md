@@ -116,6 +116,22 @@
 
 **優先順位**: 公式ドキュメント > GitHub Issue > Stack Overflow > 技術ブログ
 
+### 5.5 ステータスラインのデーモン
+
+Claude Code の使用率をステータスラインに表示するためのデーモン。
+
+| 項目 | パス |
+|------|------|
+| **デーモン** | `~/.claude/ccusage-daemon.mjs` |
+| **キャッシュ** | `~/.claude/cache/ccusage-cache.json` |
+| **ウィンドウ情報** | `~/.claude/usage-window.json` |
+
+「ステータスラインのデーモン」で本デーモンを指す。
+
+**確認依頼時のチェック項目**:
+1. デーモンプロセスの起動確認: `ps aux | grep ccusage-daemon`
+2. ウィンドウ開始時間の確認: `~/.claude/usage-window.json` の `windowStart` を表示
+
 ---
 
 ## 6. 開発全般の共通方針
